@@ -1,0 +1,46 @@
+services:
+  prepare:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: python -m scripts.cli prepare --dataset latest-small --data-dir /app/data
+    volumes:
+      - cinematch-data:/app/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      CINEMATCH_DATABASE_URL: sqlite:////app/data/cinematch.db
+      CINEMATCH_DATA_DIR: /app/data
+      CINEMATCH_ARTIFACT_DIR: /app/artifacts
+      CINEMATCH_CORS_ORIGINS: http://localhost:5173
+      CINEMATCH_READ_ONLY: ${CINEMATCH_READ_ONLY:-false}
+      CINEMATCH_LOG_LEVEL: ${CINEMATCH_LOG_LEVEL:-INFO}
+      CINEMATCH_TMDB_TOKEN: ${CINEMATCH_TMDB_TOKEN:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    volumes:
+      - cinematch-data:/app/data
+      - cinematch-artifacts:/app/artifacts
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000/api
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+volumes:
+  cinematch-data:
+  cinematch-artifacts:

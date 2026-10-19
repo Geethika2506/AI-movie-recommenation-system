@@ -1,0 +1,56 @@
+[project]
+name = "cinematch"
+version = "0.1.0"
+description = "A reproducible, local-first movie recommendation system"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "alembic==1.20.0",
+  "fastapi==0.146.0",
+  "httpx==0.28.1",
+  "numpy==2.4.6",
+  "pandas==3.0.1",
+  "pydantic==2.14.1",
+  "pydantic-settings==2.13.1",
+  "python-multipart==0.0.22",
+  "scikit-learn==1.9.1",
+  "scipy==1.17.1",
+  "sqlalchemy==2.1.5",
+  "tenacity==9.1.4",
+  "torch==2.14.1",
+  "typer==0.21.0",
+  "uvicorn[standard]==0.41.0",
+]
+
+[dependency-groups]
+dev = [
+  "mypy==2.4.0",
+  "pytest==9.1.1",
+  "pytest-cov==7.0.0",
+  "ruff==0.17.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend", "recommender"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]

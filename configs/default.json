@@ -1,0 +1,25 @@
+{
+  "content": {
+    "max_features": 20000
+  },
+  "hybrid": {
+    "diversity": 0.15,
+    "weights": {
+      "content": 0.35,
+      "mf": 0.45,
+      "popularity": 0.2
+    }
+  },
+  "mf": {
+    "batch_size": 1024,
+    "epochs": 30,
+    "factors": 32,
+    "learning_rate": 0.01,
+    "patience": 4,
+    "seed": 42,
+    "weight_decay": 0.00001
+  },
+  "popularity": {
+    "prior_votes": 20
+  }
+}
