@@ -355,7 +355,7 @@ export const api = {
       ? Promise.resolve(movies)
       : cachedGet(`discover:${profileId}`, () =>
           request<ApiRecommendation[]>(`/profiles/${profileId}/discover?limit=60`).then((rows) =>
-            withMatchScores(rows.map((row) => mapMovie(row.movie, row)),
+            withMatchScores(rows.map((row) => mapMovie(row.movie, row))),
           ),
         ),
   movie: (id: number) => request<ApiMovie>(`/movies/${id}`, undefined, undefined)
