@@ -1,5 +1,6 @@
 """Embedding-backed personal profile maintenance and hybrid ranking."""
 
+import random
 from collections import defaultdict
 from pathlib import Path
 
@@ -16,11 +17,14 @@ from backend.models import (
     UserMovieState,
     UserProfileVector,
 )
-from backend.recommendations import recommend_for_profile
+from backend.recommendations import (
+    match_count_for_discovery,
+    mix_discovery_slots,
+    recommend_for_profile,
+)
 from recommender.collaborative import ImplicitALSRecommender
 from recommender.embeddings import EMBEDDING_DIMENSIONS, EMBEDDING_FEATURE_VERSION
 from recommender.features import ACTION_WEIGHTS
-from recommender.hybrid import Candidate, HybridRecommender
 
 PROFILE_FEATURE_VERSION = "embedding-taste-v1"
 ONBOARDING_CONFIDENCE = 0.28
@@ -162,7 +166,7 @@ def embedding_hybrid_recommendations(
     limit: int,
     *,
     include_watched: bool = False,
-    diversity: float = 0.18,
+    diversity: float = 0.18,  # kept for callers; the slider uses a hard match/random mix
     exploration: float = 0.15,
     collaborative_artifact_dir: Path | None = None,
 ) -> list[tuple[Movie, float, str]]:
@@ -170,14 +174,13 @@ def embedding_hybrid_recommendations(
     if profile_vector is None:
         profile_vector = rebuild_taste_profile(session, profile_id)
     if profile_vector is None:
-        pool = min(500, max(limit * 5, 200))
         return recommend_for_profile(
             session,
             profile_id,
             limit,
             include_watched=include_watched,
             discovery=exploration,
-            candidate_limit=pool,
+            slot_mix=True,
         )
 
     states = list(
@@ -197,7 +200,7 @@ def embedding_hybrid_recommendations(
             )
         )
     )
-    pool_size = min(600, max(limit * 5, 250))
+    pool_size = min(2000, max(limit * 8, 400))
     movie_rows = list(
         session.execute(
             select(Movie, MovieEmbedding)
@@ -207,83 +210,138 @@ def embedding_hybrid_recommendations(
         )
     )
     taste = np.asarray(profile_vector.taste_vector, dtype=np.float32)
-    if float(np.linalg.norm(taste)) < 1e-9:
-        pool = min(500, max(limit * 5, 200))
+    if float(np.linalg.norm(taste)) < 1e-9 or not movie_rows:
         return recommend_for_profile(
             session,
             profile_id,
             limit,
             include_watched=include_watched,
             discovery=exploration,
-            candidate_limit=pool,
+            slot_mix=True,
         )
-    popularities = np.asarray([movie.popularity_score or 0.0 for movie, _ in movie_rows])
-    low = float(popularities.min()) if len(popularities) else 0.0
-    span = float(np.ptp(popularities)) if len(popularities) else 0.0
-    candidates: dict[str, list[Candidate]] = {
-        "content": [],
-        "collaborative": [],
-        "popularity": [],
-        "exploration": [],
-    }
-    movies: dict[int, Movie] = {}
+    collab_bonus = _collaborative_bonus(
+        profile_id,
+        excluded,
+        collaborative_artifact_dir,
+    )
+    disliked = set(profile_vector.disliked_genres or [])
+    preferred = set(profile_vector.preferred_genres or [])
+    scored: list[tuple[Movie, float, str]] = []
     for movie, embedding in movie_rows:
         if movie.id in excluded:
             continue
-        vector = np.asarray(embedding.embedding, dtype=np.float32)
-        similarity = float(np.dot(taste, vector))
-        popularity = ((movie.popularity_score or 0.0) - low) / span if span else 0.5
-        novelty = 1.0 - popularity
         genres = set(movie.genres or [])
-        matched = sorted(genres & set(profile_vector.preferred_genres))
+        if disliked and genres and genres <= disliked:
+            continue
+        vector = np.asarray(embedding.embedding, dtype=np.float32)
+        similarity = float(np.dot(taste, vector)) + 0.08 * collab_bonus.get(movie.id, 0.0)
+        matched = sorted(genres & preferred)
         if matched and profile_vector.confidence <= ONBOARDING_CONFIDENCE + 0.05:
             reason = f"Based on your interest in {matched[0]}"
         elif matched:
             reason = f"Matches your interest in {matched[0]}"
         else:
             reason = "Similar to movies you explicitly enjoyed"
-        movies[movie.id] = movie
-        candidates["content"].append(Candidate(movie.id, similarity, "content", reason, vector))
-        candidates["popularity"].append(
-            Candidate(movie.id, popularity, "popularity", "Well rated in the catalog", vector)
-        )
-        candidates["exploration"].append(
-            Candidate(
-                movie.id,
-                novelty,
-                "exploration",
-                "A less familiar eligible discovery",
-                vector,
-            )
-        )
-    if collaborative_artifact_dir and (collaborative_artifact_dir / "manifest.json").exists():
-        try:
-            collaborative = ImplicitALSRecommender.load(collaborative_artifact_dir)
-            collaborative_rows = collaborative.recommend("app", profile_id, 200, exclude=excluded)
-            missing_ids = {movie_id for movie_id, _score in collaborative_rows} - set(movies)
-            for movie in session.scalars(select(Movie).where(Movie.id.in_(missing_ids))):
-                movies[movie.id] = movie
-            candidates["collaborative"] = [
-                Candidate(
-                    movie_id,
-                    score,
-                    "collaborative",
-                    "Users with related feedback also engaged with this movie",
-                )
-                for movie_id, score in collaborative_rows
-                if movie_id in movies
-            ]
-        except (OSError, ValueError, RuntimeError):
-            candidates["collaborative"] = []
-    weights = {
-        "content": max(0.35, 0.55 - exploration * 0.2),
-        "collaborative": 0.25 if candidates["collaborative"] else 0.0,
-        "popularity": 0.2,
-        "exploration": max(0.05, exploration),
+        scored.append((movie, similarity, reason))
+    scored.sort(key=lambda item: (-item[1], -(item[0].popularity_score or 0.0), item[0].id))
+    return _mix_similar_and_random(
+        session,
+        profile_id,
+        scored,
+        excluded,
+        disliked,
+        exploration,
+        limit,
+    )
+
+
+def _collaborative_bonus(
+    profile_id: int,
+    excluded: set[int],
+    artifact_dir: Path | None,
+) -> dict[int, float]:
+    """Small tie-break from implicit ALS. Taste similarity still leads familiar picks."""
+    if artifact_dir is None or not (artifact_dir / "manifest.json").exists():
+        return {}
+    try:
+        collaborative = ImplicitALSRecommender.load(artifact_dir)
+        rows = collaborative.recommend("app", profile_id, 200, exclude=excluded)
+    except (OSError, ValueError, RuntimeError):
+        return {}
+    if not rows:
+        return {}
+    scores = [score for _movie_id, score in rows]
+    low, high = min(scores), max(scores)
+    span = high - low
+    return {
+        movie_id: ((score - low) / span if span else 0.5)
+        for movie_id, score in rows
     }
-    hybrid = HybridRecommender(weights=weights, diversity=diversity)
-    ranked = hybrid.combine(candidates, limit=limit, exclude=excluded)
-    return [(movies[item.movie_id], item.score, item.reason) for item in ranked]
+
+
+def _mix_similar_and_random(
+    session: Session,
+    profile_id: int,
+    scored: list[tuple[Movie, float, str]],
+    excluded: set[int],
+    disliked: set[str],
+    exploration: float,
+    limit: int,
+) -> list[tuple[Movie, float, str]]:
+    """Fill familiar slots from taste similarity and discovery slots from a shuffle."""
+    n_match = match_count_for_discovery(limit, exploration)
+    best = scored[0][1] if scored else 0.0
+    cutoff = max(0.15, best * 0.72) if best > 0 else 0.15
+    strong = [item for item in scored if item[1] >= cutoff]
+    matches = scored
+    similarity = {item[0].id: item[1] for item in scored}
+    eligible_ids = [
+        movie_id
+        for movie_id in session.scalars(select(Movie.id))
+        if movie_id not in excluded
+    ]
+    if n_match == 0:
+        random_ids = list(eligible_ids)
+    else:
+        reserved = {item[0].id for item in strong[:n_match]}
+        distant = [
+            movie_id
+            for movie_id in eligible_ids
+            if movie_id not in reserved and similarity.get(movie_id, 0.0) < cutoff
+        ]
+        outside = [movie_id for movie_id in eligible_ids if movie_id not in reserved]
+        random_ids = distant if distant else outside
+    random.Random(profile_id).shuffle(random_ids)
+    known = {item[0].id: item[0] for item in scored}
+    window = random_ids[: max(limit * 3, limit)]
+    missing = [movie_id for movie_id in window if movie_id not in known]
+    if missing:
+        for movie in session.scalars(select(Movie).where(Movie.id.in_(missing))):
+            known[movie.id] = movie
+    random_rows: list[tuple[Movie, float, str]] = []
+    for movie_id in window:
+        picked = known.get(movie_id)
+        if picked is None:
+            continue
+        genres = set(picked.genres or [])
+        if disliked and genres and genres <= disliked:
+            continue
+        random_rows.append((picked, 0.0, "A random pick, outside your closest matches"))
+    mixed = mix_discovery_slots(
+        matches,
+        random_rows,
+        limit,
+        exploration,
+        lambda item: item[0].id,
+    )
+    output: list[tuple[Movie, float, str]] = []
+    for item, slot in mixed:
+        movie, score, reason = item
+        if slot == "random":
+            output.append((movie, -0.2, "A random pick, outside your closest matches"))
+        else:
+            output.append((movie, score, reason))
+    return output
 
 
 def embedding_versions(session: Session) -> tuple[str, str]:

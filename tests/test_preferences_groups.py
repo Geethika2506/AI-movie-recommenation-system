@@ -8,7 +8,11 @@ from sqlalchemy import select
 from backend.app import create_app
 from backend.config import Settings
 from backend.models import GroupInvite, Movie, PreferenceEvent, UserMovieState
-from backend.recommendations import aggregate_member_scores
+from backend.recommendations import (
+    aggregate_member_scores,
+    match_count_for_discovery,
+    mix_discovery_slots,
+)
 
 A = {"X-Cinematch-Session": "alice-owned-session-key"}
 B = {"X-Cinematch-Session": "bob-owned-session-key-xx"}
@@ -156,6 +160,70 @@ def test_recommendations_follow_likes_and_discovery(tmp_path: Path) -> None:
         ).json()
         assert {row["movie"]["id"] for row in adventurous} == {2, 3, 4}
         assert len(adventurous) == 3
+        assert all("random" in row["reason"].lower() for row in adventurous)
+
+
+def test_middle_discovery_is_half_taste_matches(tmp_path: Path) -> None:
+    with TestClient(app_for(tmp_path)) as client:
+        with client.app.state.session_factory() as session:
+            session.add_all(
+                [
+                    Movie(id=1, title="Space Like", year=2000, genres=["Sci-Fi"]),
+                    *[
+                        Movie(
+                            id=movie_id,
+                            title=f"Space {movie_id}",
+                            year=2000 + movie_id,
+                            genres=["Sci-Fi"],
+                        )
+                        for movie_id in range(2, 7)
+                    ],
+                    *[
+                        Movie(
+                            id=movie_id,
+                            title=f"Other {movie_id}",
+                            year=1990 + movie_id,
+                            genres=["Drama"],
+                        )
+                        for movie_id in range(7, 17)
+                    ],
+                ]
+            )
+            session.commit()
+        alice = profile(client, "Alice", A)
+        liked = client.put(
+            f"/api/profiles/{alice}/preferences/1",
+            json={"action": "liked", "request_id": "like-scifi-mix"},
+            headers=A,
+        )
+        assert liked.status_code == 200
+        familiar = client.get(
+            f"/api/profiles/{alice}/recommendations",
+            params={"limit": 10, "discovery": 0},
+            headers=A,
+        ).json()
+        familiar_ids = [row["movie"]["id"] for row in familiar]
+        assert familiar_ids[:5] == [2, 3, 4, 5, 6]
+        assert all("random" not in row["reason"].lower() for row in familiar)
+
+        middle = client.get(
+            f"/api/profiles/{alice}/recommendations",
+            params={"limit": 10, "discovery": 50},
+            headers=A,
+        ).json()
+        middle_ids = [row["movie"]["id"] for row in middle]
+        sci_fi = {2, 3, 4, 5, 6}
+        assert sum(movie_id in sci_fi for movie_id in middle_ids) == 5
+        assert set(sci_fi).issubset(middle_ids)
+        assert sum("random" in row["reason"].lower() for row in middle) == 5
+
+        discovered = client.get(
+            f"/api/profiles/{alice}/recommendations",
+            params={"limit": 10, "discovery": 100},
+            headers=A,
+        ).json()
+        assert all("random" in row["reason"].lower() for row in discovered)
+        assert sum(row["movie"]["id"] in sci_fi for row in discovered) < 5
 
 
 def test_invite_lifecycle_membership_privacy_and_cache_versions(tmp_path: Path) -> None:
@@ -252,6 +320,22 @@ def test_invite_lifecycle_membership_privacy_and_cache_versions(tmp_path: Path) 
 
         with client.app.state.session_factory() as session:
             assert session.scalar(select(PreferenceEvent).where(PreferenceEvent.profile_id == bob))
+
+
+def test_discovery_mix_counts() -> None:
+    assert match_count_for_discovery(10, 0) == 10
+    assert match_count_for_discovery(10, 0.5) == 5
+    assert match_count_for_discovery(10, 1) == 0
+    assert match_count_for_discovery(48, 0.35) == 31
+    mixed = mix_discovery_slots(
+        ["sci-fi", "space"],
+        ["drama", "comedy", "war", "romance"],
+        limit=4,
+        discovery=0.5,
+        identity=lambda item: item,
+    )
+    assert [slot for _item, slot in mixed] == ["match", "random", "match", "random"]
+    assert [item for item, _slot in mixed] == ["sci-fi", "drama", "space", "comedy"]
 
 
 def test_group_score_formula_is_hand_checkable() -> None:

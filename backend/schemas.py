@@ -335,6 +335,11 @@ class GroupRankingRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+class GroupSessionRankingUpdate(BaseModel):
+    requester_profile_id: int = Field(gt=0)
+    ranking_algorithm: Literal["average", "least_misery", "fair_consensus", "nash"]
+
+
 class GroupSessionCreate(BaseModel):
     requester_profile_id: int = Field(gt=0)
     room_id: int | None = Field(default=None, gt=0)

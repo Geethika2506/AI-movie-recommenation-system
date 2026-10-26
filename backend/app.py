@@ -105,6 +105,7 @@ from backend.schemas import (
     GroupSatisfactionIn,
     GroupSessionCreate,
     GroupSessionOut,
+    GroupSessionRankingUpdate,
     GroupVoteIn,
     GroupVoteOut,
     InteractionIn,
@@ -382,7 +383,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         if record and not record.revoked_at:
             record.revoked_at = datetime.now(UTC)
             db.commit()
-        response.delete_cookie("cinematch_refresh", path="/api/auth")
+        _clear_refresh_cookie(response, settings)
         response.status_code = 204
         return response
 
@@ -466,7 +467,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
             raise HTTPException(status_code=403, detail="password confirmation failed")
         db.delete(user)
         db.commit()
-        response.delete_cookie("cinematch_refresh", path="/api/auth")
+        _clear_refresh_cookie(response, settings)
         response.status_code = 204
         return response
 
@@ -1509,6 +1510,26 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
             )
         ]
 
+    @app.patch("/api/sessions/{session_id}", response_model=GroupSessionOut)
+    def update_group_session_ranking(
+        session_id: str,
+        payload: GroupSessionRankingUpdate,
+        request: Request,
+        db: DB,
+    ) -> GroupSession:
+        requester = _owned_profile_or_404(db, payload.requester_profile_id, request)
+        group_session = db.get(GroupSession, session_id)
+        if not group_session:
+            raise HTTPException(status_code=404, detail="group session not found")
+        _group_member_or_404(db, group_session.group_id, requester.id)
+        _session_ranking_editor_or_403(db, group_session, requester.id)
+        if group_session.ranking_algorithm == payload.ranking_algorithm:
+            return group_session
+        group_session.ranking_algorithm = payload.ranking_algorithm
+        db.commit()
+        db.refresh(group_session)
+        return group_session
+
     @app.post("/api/sessions/{session_id}/votes", response_model=GroupVoteOut)
     def cast_group_vote(
         session_id: str,
@@ -1788,6 +1809,20 @@ def _required_user(db: Session, request: Request) -> User:
     return user
 
 
+def _refresh_cookie_options(settings: Settings) -> dict[str, object]:
+    # Production serves the SPA and API on different origins; Lax blocks the cookie on fetch().
+    return {
+        "path": "/api/auth",
+        "httponly": True,
+        "secure": settings.secure_cookies,
+        "samesite": "none" if settings.secure_cookies else "lax",
+    }
+
+
+def _clear_refresh_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie("cinematch_refresh", **_refresh_cookie_options(settings))
+
+
 def _issue_refresh_token(db: Session, response: Response, user_id: int, settings: Settings) -> None:
     raw, token_hash = new_refresh_token()
     expires_at = datetime.now(UTC) + timedelta(days=settings.refresh_token_days)
@@ -1797,10 +1832,7 @@ def _issue_refresh_token(db: Session, response: Response, user_id: int, settings
         raw,
         max_age=settings.refresh_token_days * 86_400,
         expires=expires_at,
-        httponly=True,
-        secure=settings.secure_cookies,
-        samesite="lax",
-        path="/api/auth",
+        **_refresh_cookie_options(settings),
     )
 
 
@@ -1873,6 +1905,23 @@ def _active_session_for_participant(db: Session, session_id: str, profile_id: in
         raise HTTPException(status_code=409, detail="group session is not active")
     _group_member_or_404(db, group_session.group_id, profile_id)
     return group_session
+
+
+def _session_ranking_editor_or_403(
+    db: Session, group_session: GroupSession, profile_id: int
+) -> None:
+    if group_session.status != "active":
+        raise HTTPException(status_code=409, detail="group session is not active")
+    if group_session.room_id is not None:
+        room = db.get(GroupRoom, group_session.room_id)
+        if not room or room.host_profile_id != profile_id:
+            raise HTTPException(
+                status_code=403,
+                detail="only the room host can change the recommendation mode",
+            )
+        return
+    if profile_id not in group_session.participant_profile_ids:
+        raise HTTPException(status_code=403, detail="profile is not a session participant")
 
 
 def _invite_public_url(token: str, settings: Settings) -> str:

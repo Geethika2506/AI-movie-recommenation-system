@@ -50,6 +50,52 @@ function groupModeTitle(mode: GroupRecommendationMode): string {
   return GROUP_RECOMMENDATION_MODES.find((option) => option.id === mode)?.title ?? mode;
 }
 
+function RecommendationModePicker({
+  roomId,
+  value,
+  onChange,
+  actionLabel,
+  onAction,
+  actionDisabled,
+  actionPending,
+}: {
+  roomId: number;
+  value: GroupRecommendationMode;
+  onChange: (mode: GroupRecommendationMode) => void;
+  actionLabel: string;
+  onAction: () => void;
+  actionDisabled?: boolean;
+  actionPending?: boolean;
+}) {
+  return (
+    <fieldset className="recommendation-mode-picker">
+      <legend>How should CineMatch choose for this room?</legend>
+      <p>The personal ML model scores movies for each member first. This mode controls how those scores are combined.</p>
+      <div className="recommendation-mode-grid">
+        {GROUP_RECOMMENDATION_MODES.map((mode) => (
+          <label className="recommendation-mode" key={mode.id}>
+            <input
+              type="radio"
+              name={`recommendation-mode-${roomId}`}
+              value={mode.id}
+              checked={value === mode.id}
+              onChange={() => onChange(mode.id)}
+            />
+            <span>
+              <strong>{mode.title}{mode.recommended ? " · Recommended" : ""}</strong>
+              <small>{mode.description}</small>
+              <em>{mode.formula}</em>
+            </span>
+          </label>
+        ))}
+      </div>
+      <button className="button primary" type="button" onClick={onAction} disabled={actionDisabled || actionPending}>
+        {actionPending ? "Saving…" : actionLabel}
+      </button>
+    </fieldset>
+  );
+}
+
 function profileNeedsQuestions(profile: Profile | undefined): boolean {
   return !!profile && profile.id > 0 && !(profile.seedPreferredGenres?.length);
 }
@@ -249,6 +295,7 @@ function AuthPage({ onAuthenticated }: { onAuthenticated: (user: User) => void }
           </>}
           <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
           <label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} minLength={mode === "register" ? 12 : 1} required /></label>
+          {mode === "register" && <p className="compromise-note">Password must be at least 12 characters.</p>}
           {error && <p className="form-error" role="alert">{error}</p>}
           <button className="button primary" disabled={pending}>{pending ? "Please wait…" : mode === "login" ? "Log in" : "Register"}</button>
         </form>
@@ -515,6 +562,12 @@ function Onboarding({ activeProfile, profiles, persistProfiles, readOnly, flash,
   );
 }
 
+function discoveryBalanceCopy(discovery: number): string {
+  if (discovery <= 2) return "Movies similar to the ones you chose.";
+  if (discovery >= 98) return "A random mix from the catalog.";
+  return `${Math.round(100 - discovery)}% similar to what you like, ${discovery}% random.`;
+}
+
 function Home(props: SharedProps) {
   const [discovery, setDiscovery] = useState(35);
   const { data, error, loading } = useRemote(
@@ -523,7 +576,7 @@ function Home(props: SharedProps) {
   );
   return (
     <Page eyebrow={`Curated for ${props.activeProfile?.name ?? "you"}`} title="Your next favorite is waiting" intro="A considered mix of familiar picks and discoveries, tuned to what you enjoy.">
-      <section className="discovery card" aria-labelledby="discovery-title"><div><h2 id="discovery-title">Discovery balance</h2><p>Move toward discovery for less familiar, more adventurous picks.</p></div><div className="range-wrap"><span>Familiar</span><input aria-label="Discovery balance" type="range" min="0" max="100" value={discovery} onChange={(event) => setDiscovery(Number(event.target.value))} /><span>Discovery</span></div></section>
+      <section className="discovery card" aria-labelledby="discovery-title"><div><h2 id="discovery-title">Discovery balance</h2><p>{discoveryBalanceCopy(discovery)}</p></div><div className="range-wrap"><span>Familiar</span><input aria-label="Discovery balance" aria-valuetext={discoveryBalanceCopy(discovery)} type="range" min="0" max="100" value={discovery} onChange={(event) => setDiscovery(Number(event.target.value))} /><span>Discovery</span></div></section>
       <SectionTitle title="Top picks for you" action={<Link to="/search">Browse all →</Link>} />
       <AsyncMovies loading={loading} error={error} movies={data} {...props} />
       <WantToWatchPreview {...props} />
@@ -759,7 +812,8 @@ function RoomPanel({
   onChanged: () => void;
 } & SharedProps) {
   const [recommendationMode, setRecommendationMode] =
-    useState<GroupRecommendationMode>("fair_consensus");
+    useState<GroupRecommendationMode>(session?.rankingAlgorithm ?? "fair_consensus");
+  const [updatingMode, setUpdatingMode] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [removed, setRemoved] = useState(false);
   const inRoom = room.members.some((member) => member.profileId === props.activeProfile?.id);
@@ -777,7 +831,7 @@ function RoomPanel({
     () => participating && props.activeProfile
       ? api.sessionRecommendations(session.id, props.activeProfile.id)
       : Promise.resolve([]),
-    [participating, session?.id, props.activeProfile?.id, sessionRevision, removed, deleting],
+    [participating, session?.id, session?.rankingAlgorithm, props.activeProfile?.id, sessionRevision, removed, deleting],
   );
   const ranked = useRemote(
     () => !removed && !deleting && room.members.length >= 2 && props.activeProfile
@@ -785,6 +839,34 @@ function RoomPanel({
       : Promise.resolve([]),
     [removed, deleting, room.groupId, room.id, room.members.length, props.activeProfile?.id, strategy, includeWatched, props.feedRevision],
   );
+  useEffect(() => {
+    if (session?.rankingAlgorithm) setRecommendationMode(session.rankingAlgorithm);
+  }, [session?.id, session?.rankingAlgorithm]);
+  const activeSession = session?.status === "active" ? session : undefined;
+  const modeDirty = activeSession
+    ? recommendationMode !== activeSession.rankingAlgorithm
+    : true;
+  const applyRecommendationMode = async () => {
+    if (!props.activeProfile) return;
+    if (!activeSession) {
+      onStart(room, recommendationMode);
+      return;
+    }
+    if (!modeDirty) {
+      props.flash(`Already using ${groupModeTitle(recommendationMode)}`);
+      return;
+    }
+    setUpdatingMode(true);
+    try {
+      await api.updateGroupSessionRanking(activeSession.id, props.activeProfile.id, recommendationMode);
+      onChanged();
+      props.flash(`Recommendation mode updated to ${groupModeTitle(recommendationMode)}`);
+    } catch (reason) {
+      props.flash(reason instanceof Error ? reason.message : "Couldn’t update recommendation mode");
+    } finally {
+      setUpdatingMode(false);
+    }
+  };
   const vote = async (movie: Movie, action: "like" | "love" | "dislike" | "veto") => {
     if (!session || !props.activeProfile) return;
     try {
@@ -852,18 +934,18 @@ function RoomPanel({
       {isHost && <div className="room-actions"><button className="button" type="button" onClick={copyRoomLink}>Copy room link</button>{canDeleteRoom && <button className="button danger-button" type="button" onClick={deleteRoom} disabled={deleting}>{deleting ? "Deleting…" : "Delete room"}</button>}</div>}
       {!isHost && canDeleteRoom && <div className="room-actions"><button className="button danger-button" type="button" onClick={deleteRoom} disabled={deleting}>{deleting ? "Deleting…" : "Delete room"}</button></div>}
       <div className="member-list">{room.members.map((member) => <span key={member.profileId}>{member.name}{member.host ? " · host" : ""}{(isHost && !member.host) || (member.profileId === props.activeProfile?.id && !member.host) ? <button type="button" onClick={() => removeMember(member.profileId)}>{member.profileId === props.activeProfile?.id ? "Leave" : "Remove"}</button> : null}</span>)}</div>
-      {isHost && !session && <fieldset className="recommendation-mode-picker">
-        <legend>How should CineMatch choose for this room?</legend>
-        <p>The personal ML model scores movies for each member first. This mode controls how those scores are combined.</p>
-        <div className="recommendation-mode-grid">
-          {GROUP_RECOMMENDATION_MODES.map((mode) => <label className="recommendation-mode" key={mode.id}>
-            <input type="radio" name={`recommendation-mode-${room.id}`} value={mode.id} checked={recommendationMode === mode.id} onChange={() => setRecommendationMode(mode.id)} />
-            <span><strong>{mode.title}{mode.recommended ? " · Recommended" : ""}</strong><small>{mode.description}</small><em>{mode.formula}</em></span>
-          </label>)}
-        </div>
-        <button className="button primary" type="button" onClick={() => onStart(room, recommendationMode)} disabled={room.members.length < 2}>Start with {groupModeTitle(recommendationMode)}</button>
-      </fieldset>}
-      {!isHost && inRoom && !session && <p className="compromise-note">Waiting for {room.hostName} to choose a recommendation mode and start movie night.</p>}
+      {isHost && <RecommendationModePicker
+        roomId={room.id}
+        value={recommendationMode}
+        onChange={setRecommendationMode}
+        actionLabel={activeSession
+          ? (modeDirty ? `Apply ${groupModeTitle(recommendationMode)}` : "Recommendation mode saved")
+          : `Start with ${groupModeTitle(recommendationMode)}`}
+        onAction={applyRecommendationMode}
+        actionDisabled={!activeSession && room.members.length < 2}
+        actionPending={updatingMode}
+      />}
+      {!isHost && inRoom && !activeSession && <p className="compromise-note">Waiting for {room.hostName} to choose a recommendation mode and start movie night.</p>}
       {!inRoom && <p>You can see this room because you own the group.</p>}
       {participating && session && <div className="group-session-panel"><h3>{groupModeTitle(session.rankingAlgorithm)} consensus feed</h3><p>Mode: <strong>{groupModeTitle(session.rankingAlgorithm)}</strong>. Every participant has one vote; a veto removes that movie from this room only.</p>{movieState.loading ? <Skeleton count={1} /> : movieState.data?.[0] && <><MovieCard movie={movieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(movieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(movieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(movieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(movieState.data![0], "like")}>Like</button></div></>}</div>}
       {room.members.length < 2 ? <p className="compromise-note">Waiting for someone to open this link.</p> : <><p className="compromise-note">Scores in this room use only these members.</p><AsyncMovies loading={ranked.loading} error={ranked.error} movies={ranked.data} {...props} /></>}

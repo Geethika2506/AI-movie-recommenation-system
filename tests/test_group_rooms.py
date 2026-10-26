@@ -116,6 +116,20 @@ def test_each_invite_link_opens_a_separate_room(tmp_path: Path) -> None:
         assert started.status_code == 201
         assert started.json()["room_id"] == bob_room["id"]
         assert started.json()["ranking_algorithm"] == "nash"
+        session_id = started.json()["id"]
+        updated = client.patch(
+            f"/api/sessions/{session_id}",
+            headers=B,
+            json={"requester_profile_id": bob, "ranking_algorithm": "least_misery"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["ranking_algorithm"] == "least_misery"
+        denied_mode = client.patch(
+            f"/api/sessions/{session_id}",
+            headers=C,
+            json={"requester_profile_id": carol, "ranking_algorithm": "average"},
+        )
+        assert denied_mode.status_code == 403
         carol_sessions = client.get(
             f"/api/groups/{group['id']}/sessions",
             headers=C,

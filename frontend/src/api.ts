@@ -24,7 +24,19 @@ async function cachedGet<T>(key: string, loader: () => Promise<T>): Promise<T> {
   return value;
 }
 
-let accessToken = "";
+const ACCESS_TOKEN_KEY = "cinematch:accessToken";
+let accessToken = sessionStorage.getItem(ACCESS_TOKEN_KEY) ?? "";
+
+function persistAccessToken(token: string) {
+  accessToken = token;
+  sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
+}
+
+function clearAccessToken() {
+  accessToken = "";
+  sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+}
+
 const sessionKey = (() => {
   const existing = localStorage.getItem("cinematch:session");
   if (existing) return existing;
@@ -42,8 +54,11 @@ export class ApiError extends Error {
 function errorDetail(detail: unknown): string | undefined {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
-    const first = detail.find((item) => item && typeof item === "object" && "msg" in item) as { msg?: string } | undefined;
-    return first?.msg;
+    const messages = detail
+      .filter((item) => item && typeof item === "object" && "msg" in item)
+      .map((item) => (item as { msg?: string }).msg)
+      .filter(Boolean) as string[];
+    if (messages.length) return messages.join(" ");
   }
   return undefined;
 }
@@ -73,7 +88,7 @@ async function request<T>(path: string, init?: RequestInit, fallback?: T): Promi
     } catch (error) {
       if (error instanceof ApiError && error.status === 401 && !path.startsWith("/auth/")) {
         const refreshed = await rawRequest<ApiAuth>("/auth/refresh", { method: "POST" });
-        accessToken = refreshed.access_token;
+        persistAccessToken(refreshed.access_token);
         return await rawRequest<T>(path, init);
       }
       throw error;
@@ -279,7 +294,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ username, email, password, profile_name: profileName }),
     }).then((result) => {
-      accessToken = result.access_token;
+      persistAccessToken(result.access_token);
       return mapUser(result.user);
     }),
   login: (email: string, password: string) =>
@@ -287,16 +302,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }).then((result) => {
-      accessToken = result.access_token;
+      persistAccessToken(result.access_token);
       return mapUser(result.user);
     }),
-  restoreSession: () => rawRequest<ApiAuth>("/auth/refresh", { method: "POST" })
-    .then((result) => {
-      accessToken = result.access_token;
+  restoreSession: async () => {
+    try {
+      const result = await rawRequest<ApiAuth>("/auth/refresh", { method: "POST" });
+      persistAccessToken(result.access_token);
       return mapUser(result.user);
-    }),
+    } catch (error) {
+      if (accessToken) {
+        try {
+          return await rawRequest<ApiUser>("/users/me").then(mapUser);
+        } catch {
+          clearAccessToken();
+        }
+      }
+      throw error;
+    }
+  },
   logout: () => request<void>("/auth/logout", { method: "POST" }).finally(() => {
-    accessToken = "";
+    clearAccessToken();
   }),
   me: () => request<ApiUser>("/users/me").then(mapUser),
   updateServices: (country: string, providerIds: number[]) =>
@@ -522,6 +548,18 @@ export const api = {
   groupSessions: (groupId: number, profileId: number) =>
     request<ApiGroupSession[]>(`/groups/${groupId}/sessions?profile_id=${profileId}`)
       .then((sessions) => sessions.map(mapGroupSession)),
+  updateGroupSessionRanking: (
+    sessionId: string,
+    requesterProfileId: number,
+    rankingAlgorithm: GroupRecommendationMode,
+  ) =>
+    request<ApiGroupSession>(`/sessions/${sessionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        requester_profile_id: requesterProfileId,
+        ranking_algorithm: rankingAlgorithm,
+      }),
+    }).then(mapGroupSession),
   sessionRecommendations: (sessionId: string, profileId: number) =>
     request<ApiRecommendation[]>(`/sessions/${sessionId}/recommendations?profile_id=${profileId}`)
       .then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row)))),
