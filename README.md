@@ -45,19 +45,15 @@ The **static site** build on Render embeds `VITE_API_URL=https://ai-movie-recomm
 
 Walkthrough of the hosted app (onboarding, recommendations, group movie night). Script: [docs/demo-script.md](docs/demo-script.md).
 
-GitHub often shows MP4 URLs as **text links**, not a player. This README uses two options that work reliably:
+**Preview** (loops in the README). Click to open the **full demo on YouTube**:
 
-**Preview (autoplays in the README — no click):**
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=FCrZynoPYUU">
+    <img src="docs/cinematch-demo-preview.gif" width="100%" alt="CineMatch demo preview — onboarding, recommendations, group movie night" />
+  </a>
+</p>
 
-![CineMatch demo preview — onboarding, recommendations, group movie night](docs/cinematch-demo-preview.gif)
-
-**Full recording (~6 min, 1080×1920)** — click the poster to open the video in a new tab (browser player):
-
-[![Play the full CineMatch demo (~6 min)](docs/cinematch-demo-poster.jpg)](https://cdn.jsdelivr.net/gh/Geethika2506/AI-movie-recommenation-system@main/docs/cinematch-demo.web.mp4)
-
-**Optional — YouTube (best for recruiters):** upload [`docs/cinematch-demo.web.mp4`](docs/cinematch-demo.web.mp4) as **Unlisted**, then add a thumbnail line like  
-`[![Watch on YouTube](https://img.youtube.com/vi/YOUR_VIDEO_ID/hqdefault.jpg)](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)`  
-and replace `YOUR_VIDEO_ID`.
+**Full walkthrough:** [Watch on YouTube](https://www.youtube.com/watch?v=FCrZynoPYUU) · [youtu.be/FCrZynoPYUU](https://youtu.be/FCrZynoPYUU)
 
 ---
 

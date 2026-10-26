@@ -24,5 +24,6 @@ cinematch.db
 *.sqlite3
 .neon
 node_modules/
-# Full-size screen recording (HEVC); commit docs/cinematch-demo.web.mp4 instead.
+# Local screen recordings (hosted demo is on YouTube).
 docs/cinematch-demo.mp4
+docs/cinematch-demo.web.mp4
