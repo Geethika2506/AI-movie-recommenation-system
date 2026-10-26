@@ -48,12 +48,12 @@ Walkthrough of the hosted app (onboarding, recommendations, group movie night). 
 **Preview** (loops in the README). Click to open the **full demo on YouTube**:
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=FCrZynoPYUU">
+  <a href="https://www.youtube.com/watch?v=6vkoj2XnSss">
     <img src="docs/cinematch-demo-preview.gif" width="100%" alt="CineMatch demo preview — onboarding, recommendations, group movie night" />
   </a>
 </p>
 
-**Full walkthrough:** [Watch on YouTube](https://www.youtube.com/watch?v=FCrZynoPYUU) · [youtu.be/FCrZynoPYUU](https://youtu.be/FCrZynoPYUU)
+**Full walkthrough:** [Watch on YouTube](https://www.youtube.com/watch?v=6vkoj2XnSss) · [youtu.be/6vkoj2XnSss](https://youtu.be/6vkoj2XnSss)
 
 ---
 
