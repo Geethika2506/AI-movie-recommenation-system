@@ -217,6 +217,7 @@ def hydrate_posters(
     data_dir: Path,
     *,
     enabled: bool,
+    live_fetch: bool = True,
     client: httpx.Client | None = None,
 ) -> None:
     """Fill missing poster URLs for the movies about to be shown."""
@@ -234,7 +235,7 @@ def hydrate_posters(
         if cached:
             movie.poster_path = cached
             changed = True
-        elif movie.id not in cache and enabled:
+        elif movie.id not in cache and enabled and live_fetch:
             pending.append(movie)
     if pending:
 

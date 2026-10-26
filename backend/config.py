@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     tmdb_token: str | None = None
     tmdb_cache_ttl_seconds: int = 86_400
     poster_lookup: bool = True
+    # When false, only DB + on-disk poster cache are used (no Wikipedia/TMDB on each request).
+    poster_live_fetch: bool = True
     public_app_url: str = "http://localhost:5173"
     auto_create_schema: bool = False
     jwt_secret: str = "development-only-change-me-32-bytes"

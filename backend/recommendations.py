@@ -13,8 +13,12 @@ def recommend_for_profile(
     exclude: set[int] | None = None,
     include_watched: bool = False,
     discovery: float = 0.35,
+    candidate_limit: int | None = None,
 ) -> list[tuple[Movie, float, str]]:
-    movies = session.scalars(select(Movie)).all()
+    stmt = select(Movie).order_by(Movie.popularity_score.desc().nullslast(), Movie.id)
+    if candidate_limit is not None:
+        stmt = stmt.limit(max(candidate_limit, limit))
+    movies = session.scalars(stmt).all()
     ratings = session.execute(
         select(Rating.movie_id, Rating.value).where(Rating.profile_id == profile_id)
     ).all()
@@ -205,8 +209,13 @@ def discovery_for_profile(
     session: Session, profile_id: int, limit: int
 ) -> list[tuple[Movie, float, str]]:
     """Round-robin ranked candidates across genre/era buckets for simple exploration."""
-    movie_count = session.scalar(select(func.count()).select_from(Movie)) or 0
-    ranked = recommend_for_profile(session, profile_id, movie_count)
+    pool_size = min(500, max(limit * 5, 200))
+    ranked = recommend_for_profile(
+        session,
+        profile_id,
+        pool_size,
+        candidate_limit=pool_size,
+    )
     buckets: dict[tuple[str, int], list[tuple[Movie, float, str]]] = {}
     for item in ranked:
         movie = item[0]

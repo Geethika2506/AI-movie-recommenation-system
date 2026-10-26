@@ -1966,6 +1966,7 @@ def _attach_posters(db: Session, movies: list[Movie], settings: Settings) -> Non
         movies,
         settings.data_dir,
         enabled=settings.poster_lookup,
+        live_fetch=settings.poster_live_fetch,
     )
 
 
