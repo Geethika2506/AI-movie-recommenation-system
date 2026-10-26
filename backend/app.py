@@ -280,6 +280,15 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
 
     DB = Annotated[Session, Depends(get_session)]
 
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {
+            "service": "cinematch-api",
+            "health": "/health",
+            "docs": "/docs",
+            "app": settings.public_app_url,
+        }
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
