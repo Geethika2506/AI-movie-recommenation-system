@@ -48,6 +48,18 @@ def test_each_invite_link_opens_a_separate_room(tmp_path: Path) -> None:
             json={"profile_id": bob},
         ).json()
         assert joined["joined_room_name"] == "Alice's room"
+        non_host_start = client.post(
+            f"/api/groups/{group['id']}/sessions",
+            headers=B,
+            json={
+                "requester_profile_id": bob,
+                "room_id": alice_invite["room_id"],
+                "participant_profile_ids": [alice, bob],
+                "ranking_algorithm": "average",
+            },
+        )
+        assert non_host_start.status_code == 403
+        assert "room host" in non_host_start.json()["detail"]
         bob_invite = client.post(
             f"/api/groups/{group['id']}/invites",
             headers=B,
@@ -98,10 +110,12 @@ def test_each_invite_link_opens_a_separate_room(tmp_path: Path) -> None:
                 "requester_profile_id": bob,
                 "room_id": bob_room["id"],
                 "participant_profile_ids": [bob, carol],
+                "ranking_algorithm": "nash",
             },
         )
         assert started.status_code == 201
         assert started.json()["room_id"] == bob_room["id"]
+        assert started.json()["ranking_algorithm"] == "nash"
         carol_sessions = client.get(
             f"/api/groups/{group['id']}/sessions",
             headers=C,
@@ -114,3 +128,44 @@ def test_each_invite_link_opens_a_separate_room(tmp_path: Path) -> None:
             json={"requester_profile_id": carol, "strategy": "balanced"},
         )
         assert hidden.status_code == 404
+
+        link = client.get(
+            f"/api/groups/{group['id']}/rooms/{alice_room['id']}/invite-link",
+            headers=A,
+            params={"profile_id": alice},
+        )
+        assert link.status_code == 200
+        assert alice_invite["token"] in link.json()["invite_url"]
+
+        denied_link = client.get(
+            f"/api/groups/{group['id']}/rooms/{bob_room['id']}/invite-link",
+            headers=A,
+            params={"profile_id": alice},
+        )
+        assert denied_link.status_code == 403
+
+        removed = client.delete(
+            f"/api/groups/{group['id']}/rooms/{alice_room['id']}/members/{bob}",
+            headers=A,
+            params={"requester_profile_id": alice},
+        )
+        assert removed.status_code == 204
+        alice_room = client.get(
+            f"/api/groups/{group['id']}/rooms",
+            headers=A,
+            params={"profile_id": alice},
+        ).json()[0]
+        assert {member["name"] for member in alice_room["members"]} == {"Alice"}
+
+        deleted = client.delete(
+            f"/api/groups/{group['id']}/rooms/{alice_room['id']}",
+            headers=A,
+            params={"profile_id": alice},
+        )
+        assert deleted.status_code == 204
+        remaining = client.get(
+            f"/api/groups/{group['id']}/rooms",
+            headers=A,
+            params={"profile_id": alice},
+        ).json()
+        assert alice_room["name"] not in {room["name"] for room in remaining}

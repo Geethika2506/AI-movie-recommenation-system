@@ -172,6 +172,11 @@ describe("CineMatch", () => {
     expect(screen.getByRole("button", { name: "Email a code to change password" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset recommendations" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Log out" }).length).toBeGreaterThan(1);
+    expect(screen.queryByRole("heading", { name: "Streaming availability" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Dataset")).not.toBeInTheDocument();
+    expect(screen.queryByText("Metadata")).not.toBeInTheDocument();
+    expect(screen.queryByText("Active model")).not.toBeInTheDocument();
+    expect(screen.queryByText(/bayesian/i)).not.toBeInTheDocument();
   });
 
   it("shows an empty want-to-watch state before anything is saved", async () => {
@@ -189,5 +194,66 @@ describe("CineMatch", () => {
     });
     renderApp("/wishlist");
     expect(await screen.findByText("Nothing saved yet")).toBeInTheDocument();
+  });
+
+  it("lets the room host choose the group recommendation mode", async () => {
+    localStorage.setItem("cinematch:profiles", JSON.stringify([profile]));
+    let sessionPayload: Record<string, unknown> | undefined;
+    vi.mocked(fetch).mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/auth/refresh")) return json(auth);
+      if (url.includes("/settings")) return json({
+        active_model: "hybrid-v1", dataset: "test", movie_count: 10, rating_count: 0,
+        last_trained: null, read_only: false, tmdb_available: false,
+      });
+      if (url.endsWith("/profiles")) return json([apiProfile]);
+      if (url.endsWith("/groups")) return json([{
+        id: 1,
+        name: "Friday",
+        owner_profile_id: 1,
+        recommendation_version: 1,
+        members: [
+          { profile_id: 1, name: "Maya", role: "owner", feedback_count: 8, needs_onboarding: false },
+          { profile_id: 2, name: "Alex", role: "member", feedback_count: 5, needs_onboarding: false },
+        ],
+      }]);
+      if (url.includes("/groups/1/rooms?")) return json([{
+        id: 10,
+        group_id: 1,
+        invite_id: 20,
+        host_profile_id: 1,
+        host_name: "Maya",
+        name: "Maya's room",
+        members: [
+          { profile_id: 1, name: "Maya", host: true },
+          { profile_id: 2, name: "Alex", host: false },
+        ],
+      }]);
+      if (url.includes("/groups/1/sessions") && init?.method === "POST") {
+        sessionPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return json({
+          id: "session-1",
+          group_id: 1,
+          room_id: 10,
+          status: "active",
+          participant_profile_ids: [1, 2],
+          participant_set_version: 1,
+          selected_movie_id: null,
+          ranking_algorithm: sessionPayload.ranking_algorithm,
+          consensus_policy: "majority",
+        }, 201);
+      }
+      if (url.includes("/groups/1/sessions?")) return json([]);
+      if (url.includes("/groups/1/rooms/10/recommendations")) {
+        return json([{ movie: sampleMovie, score: 0.8, reason: "test", model_version: "group-v1" }]);
+      }
+      return json({ detail: "test fallback" }, 500);
+    });
+
+    const user = userEvent.setup();
+    renderApp("/group");
+    await user.click(await screen.findByText("All On Board"));
+    await user.click(screen.getByRole("button", { name: "Start with All On Board" }));
+    await waitFor(() => expect(sessionPayload?.ranking_algorithm).toBe("nash"));
   });
 });

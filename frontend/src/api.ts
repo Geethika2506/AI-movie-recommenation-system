@@ -1,5 +1,5 @@
 import { movies, settings } from "./data";
-import type { Evaluation, Group, GroupRoom, GroupSession, Movie, MovieAction, PreferenceResult, Profile, Settings, SwipeAction, User } from "./types";
+import type { Evaluation, Group, GroupRecommendationMode, GroupRoom, GroupSession, Movie, MovieAction, PreferenceResult, Profile, Settings, SwipeAction, User } from "./types";
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ?? "/api";
 const demoFallback = import.meta.env.VITE_DEMO_FALLBACK === "true" || import.meta.env.MODE === "test";
@@ -126,6 +126,7 @@ type ApiGroup = {
 type ApiGroupSession = {
   id: string; group_id: number; room_id?: number | null; status: string; participant_profile_ids: number[];
   participant_set_version: number; selected_movie_id: number | null;
+  ranking_algorithm: GroupRecommendationMode; consensus_policy: string;
 };
 type ApiRoom = {
   id: number; group_id: number; invite_id: number; host_profile_id: number; host_name: string; name: string;
@@ -149,6 +150,8 @@ const mapGroupSession = (session: ApiGroupSession): GroupSession => ({
   groupId: session.group_id,
   roomId: session.room_id ?? undefined,
   status: session.status,
+  rankingAlgorithm: session.ranking_algorithm,
+  consensusPolicy: session.consensus_policy,
   participantProfileIds: session.participant_profile_ids,
   participantSetVersion: session.participant_set_version,
   selectedMovieId: session.selected_movie_id ?? undefined,
@@ -468,12 +471,34 @@ export const api = {
     })),
   groupRooms: (groupId: number, profileId: number) =>
     request<ApiRoom[]>(`/groups/${groupId}/rooms?profile_id=${profileId}`, undefined, []).then((rooms) => rooms.map(mapRoom)),
+  roomInviteLink: (groupId: number, roomId: number, profileId: number) =>
+    request<{ invite_url: string; expires_at: string; room_id: number; room_name: string }>(
+      `/groups/${groupId}/rooms/${roomId}/invite-link?profile_id=${profileId}`,
+    ),
+  deleteRoom: (groupId: number, roomId: number, profileId: number) =>
+    request<void>(`/groups/${groupId}/rooms/${roomId}?profile_id=${profileId}`, { method: "DELETE" }),
+  removeRoomMember: (
+    groupId: number,
+    roomId: number,
+    memberProfileId: number,
+    requesterProfileId: number,
+  ) =>
+    request<void>(
+      `/groups/${groupId}/rooms/${roomId}/members/${memberProfileId}?requester_profile_id=${requesterProfileId}`,
+      { method: "DELETE" },
+    ),
   groupRecommendations: (groupId: number, profileId: number, strategy: "balanced" | "everyone_matters", includeWatched: boolean) =>
     request<ApiRecommendation[]>(`/groups/${groupId}/recommendations`, {
       method: "POST",
       body: JSON.stringify({ requester_profile_id: profileId, strategy, include_watched: includeWatched, limit: 40 }),
     }).then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row)))),
-  createGroupSession: (groupId: number, requesterProfileId: number, participantProfileIds: number[], roomId?: number) =>
+  createGroupSession: (
+    groupId: number,
+    requesterProfileId: number,
+    participantProfileIds: number[],
+    roomId: number | undefined,
+    rankingAlgorithm: GroupRecommendationMode,
+  ) =>
     request<ApiGroupSession>(`/groups/${groupId}/sessions`, {
       method: "POST",
       body: JSON.stringify({
@@ -481,7 +506,7 @@ export const api = {
         participant_profile_ids: participantProfileIds,
         room_id: roomId,
         consensus_policy: "majority",
-        ranking_algorithm: "fair_consensus",
+        ranking_algorithm: rankingAlgorithm,
       }),
     }).then(mapGroupSession),
   roomRecommendations: (groupId: number, roomId: number, profileId: number, strategy: "balanced" | "everyone_matters", includeWatched: boolean) =>

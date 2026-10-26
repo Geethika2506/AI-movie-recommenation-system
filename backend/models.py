@@ -220,6 +220,7 @@ class GroupInvite(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    invite_token: Mapped[str | None] = mapped_column(String(64))
     created_by_profile_id: Mapped[int | None] = mapped_column(
         ForeignKey("profiles.id", ondelete="SET NULL")
     )

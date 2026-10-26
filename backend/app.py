@@ -124,6 +124,7 @@ from backend.schemas import (
     RatingIn,
     RatingOut,
     RecommendationOut,
+    RoomInviteLinkOut,
     SystemMetadataOut,
     UserLogin,
     UserOut,
@@ -1114,6 +1115,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         invite = GroupInvite(
             group_id=group.id,
             token_hash=_hash_token(token),
+            invite_token=token,
             created_by_profile_id=profile.id,
             expires_at=datetime.now(UTC) + timedelta(hours=payload.expires_in_hours),
         )
@@ -1125,7 +1127,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         return InviteOut(
             id=invite.id,
             token=token,
-            invite_url=f"{settings.public_app_url.rstrip('/')}/#/invite/{token}",
+            invite_url=_invite_public_url(token, settings),
             expires_at=invite.expires_at,
             room_id=room.id,
             room_name=room.name,
@@ -1282,6 +1284,90 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         group = _group_member_or_404(db, group_id, profile.id)
         return [_room_output(db, room) for room in _rooms_visible_to(db, group, profile.id)]
 
+    @app.get(
+        "/api/groups/{group_id}/rooms/{room_id}/invite-link",
+        response_model=RoomInviteLinkOut,
+    )
+    def room_invite_link(
+        group_id: int,
+        room_id: int,
+        request: Request,
+        db: DB,
+        profile_id: int = Query(gt=0),
+    ) -> RoomInviteLinkOut:
+        profile = _owned_profile_or_404(db, profile_id, request)
+        group = _group_member_or_404(db, group_id, profile.id)
+        room = _visible_room_or_404(db, group, room_id, profile.id)
+        _room_host_or_403(room, profile.id)
+        invite = db.get(GroupInvite, room.invite_id)
+        if not invite:
+            raise HTTPException(status_code=404, detail="invitation not found")
+        token = _ensure_invite_token(db, invite)
+        db.commit()
+        db.refresh(invite)
+        return RoomInviteLinkOut(
+            invite_url=_invite_public_url(token, settings),
+            expires_at=invite.expires_at,
+            room_id=room.id,
+            room_name=room.name,
+        )
+
+    @app.delete("/api/groups/{group_id}/rooms/{room_id}", status_code=204)
+    def delete_room(
+        group_id: int,
+        room_id: int,
+        request: Request,
+        db: DB,
+        profile_id: int = Query(gt=0),
+    ) -> Response:
+        profile = _owned_profile_or_404(db, profile_id, request)
+        group = _group_member_or_404(db, group_id, profile.id)
+        room = _visible_room_or_404(db, group, room_id, profile.id)
+        _room_host_or_403(room, profile.id)
+        _cancel_active_room_sessions(db, room.id)
+        invite_id = room.invite_id
+        db.delete(room)
+        invite = db.get(GroupInvite, invite_id)
+        if invite:
+            db.delete(invite)
+        db.commit()
+        return Response(status_code=204)
+
+    @app.delete(
+        "/api/groups/{group_id}/rooms/{room_id}/members/{member_profile_id}",
+        status_code=204,
+    )
+    def remove_room_member(
+        group_id: int,
+        room_id: int,
+        member_profile_id: int,
+        request: Request,
+        db: DB,
+        requester_profile_id: int = Query(gt=0),
+    ) -> Response:
+        requester = _owned_profile_or_404(db, requester_profile_id, request)
+        group = _group_member_or_404(db, group_id, requester.id)
+        room = _visible_room_or_404(db, group, room_id, requester.id)
+        if member_profile_id == room.host_profile_id:
+            raise HTTPException(status_code=409, detail="the host cannot be removed from the room")
+        if requester.id != room.host_profile_id and requester.id != member_profile_id:
+            raise HTTPException(
+                status_code=403,
+                detail="only the room host can remove other members",
+            )
+        membership = db.scalar(
+            select(GroupRoomMember).where(
+                GroupRoomMember.room_id == room.id,
+                GroupRoomMember.profile_id == member_profile_id,
+            )
+        )
+        if not membership:
+            raise HTTPException(status_code=404, detail="room membership not found")
+        db.delete(membership)
+        _remove_profile_from_room_sessions(db, room.id, member_profile_id)
+        db.commit()
+        return Response(status_code=204)
+
     @app.post(
         "/api/groups/{group_id}/rooms/{room_id}/recommendations",
         response_model=list[RecommendationOut],
@@ -1349,6 +1435,14 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
             room = db.get(GroupRoom, payload.room_id)
             if not room or room.group_id != group_id:
                 raise HTTPException(status_code=404, detail="room not found")
+            if room.host_profile_id != requester.id:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "only the room host can choose a recommendation mode "
+                        "and start movie night"
+                    ),
+                )
             room_member_ids = set(
                 db.scalars(
                     select(GroupRoomMember.profile_id).where(
@@ -1356,11 +1450,6 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
                     )
                 )
             )
-            if requester.id not in room_member_ids:
-                raise HTTPException(
-                    status_code=403,
-                    detail="only people in this room can start its movie night",
-                )
             allowed &= room_member_ids
         participants = payload.participant_profile_ids or sorted(allowed)
         if requester.id not in participants or not set(participants).issubset(allowed):
@@ -1784,6 +1873,58 @@ def _active_session_for_participant(db: Session, session_id: str, profile_id: in
         raise HTTPException(status_code=409, detail="group session is not active")
     _group_member_or_404(db, group_session.group_id, profile_id)
     return group_session
+
+
+def _invite_public_url(token: str, settings: Settings) -> str:
+    return f"{settings.public_app_url.rstrip('/')}/#/invite/{token}"
+
+
+def _room_host_or_403(room: GroupRoom, profile_id: int) -> None:
+    if room.host_profile_id != profile_id:
+        raise HTTPException(status_code=403, detail="only the room host can do that")
+
+
+def _ensure_invite_token(db: Session, invite: GroupInvite) -> str:
+    now = datetime.now(UTC)
+    expires_at = invite.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if invite.invite_token and not invite.revoked_at and expires_at > now:
+        return invite.invite_token
+    token = secrets.token_urlsafe(32)
+    invite.token_hash = _hash_token(token)
+    invite.invite_token = token
+    invite.revoked_at = None
+    if expires_at <= now:
+        invite.expires_at = now + timedelta(hours=48)
+    return token
+
+
+def _cancel_active_room_sessions(db: Session, room_id: int) -> None:
+    for active in db.scalars(
+        select(GroupSession).where(
+            GroupSession.room_id == room_id,
+            GroupSession.status == "active",
+        )
+    ):
+        active.status = "cancelled"
+
+
+def _remove_profile_from_room_sessions(
+    db: Session, room_id: int, profile_id: int
+) -> None:
+    for active in db.scalars(
+        select(GroupSession).where(
+            GroupSession.room_id == room_id,
+            GroupSession.status == "active",
+        )
+    ):
+        if profile_id not in active.participant_profile_ids:
+            continue
+        active.participant_profile_ids = [
+            value for value in active.participant_profile_ids if value != profile_id
+        ]
+        active.participant_set_version += 1
 
 
 def _next_room_name(db: Session, group_id: int, profile_name: str) -> str:

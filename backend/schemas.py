@@ -313,6 +313,13 @@ class InviteOut(BaseModel):
     room_name: str
 
 
+class RoomInviteLinkOut(BaseModel):
+    invite_url: str
+    expires_at: datetime
+    room_id: int
+    room_name: str
+
+
 class InviteJoin(BaseModel):
     profile_id: int
 

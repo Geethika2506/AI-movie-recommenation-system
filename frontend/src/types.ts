@@ -56,11 +56,15 @@ export type Group = {
   members: GroupMember[];
 };
 
+export type GroupRecommendationMode = "average" | "least_misery" | "fair_consensus" | "nash";
+
 export type GroupSession = {
   id: string;
   groupId: number;
   roomId?: number;
   status: string;
+  rankingAlgorithm: GroupRecommendationMode;
+  consensusPolicy: string;
   participantProfileIds: number[];
   participantSetVersion: number;
   selectedMovieId?: number;

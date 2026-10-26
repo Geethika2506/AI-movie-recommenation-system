@@ -3,7 +3,7 @@ import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, usePa
 import { motion } from "motion/react";
 import { api } from "./api";
 import { movies as demoMovies } from "./data";
-import type { GroupRoom, GroupSession, Movie, MovieAction, PreferenceResult, Profile, Settings, SwipeAction, User } from "./types";
+import type { GroupRecommendationMode, GroupRoom, GroupSession, Movie, MovieAction, PreferenceResult, Profile, SwipeAction, User } from "./types";
 
 const colors = ["#f6b84b", "#77cbb9", "#dd7d91", "#9b8ee8"];
 
@@ -11,6 +11,44 @@ const ONBOARDING_GENRES = [
   "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary", "Drama",
   "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western",
 ] as const;
+
+const GROUP_RECOMMENDATION_MODES: {
+  id: GroupRecommendationMode;
+  title: string;
+  description: string;
+  formula: string;
+  recommended?: boolean;
+}[] = [
+  {
+    id: "average",
+    title: "Crowd Favorite",
+    description: "Prioritizes the highest average enjoyment. Best when the room already has similar tastes.",
+    formula: "Average member score",
+  },
+  {
+    id: "least_misery",
+    title: "No Regrets",
+    description: "Protects the least-satisfied person so nobody gets stuck with a movie they strongly dislike.",
+    formula: "Highest minimum score",
+  },
+  {
+    id: "fair_consensus",
+    title: "Balanced Mix",
+    description: "Balances overall enjoyment with the least-satisfied member and penalizes sharp disagreement.",
+    formula: "Average + minimum − disagreement",
+    recommended: true,
+  },
+  {
+    id: "nash",
+    title: "All On Board",
+    description: "Rewards choices that every member scores reasonably well, instead of one person's perfect pick.",
+    formula: "Geometric mean",
+  },
+];
+
+function groupModeTitle(mode: GroupRecommendationMode): string {
+  return GROUP_RECOMMENDATION_MODES.find((option) => option.id === mode)?.title ?? mode;
+}
 
 function profileNeedsQuestions(profile: Profile | undefined): boolean {
   return !!profile && profile.id > 0 && !(profile.seedPreferredGenres?.length);
@@ -663,7 +701,7 @@ function Group(props: SharedProps) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t update membership");
     }
   };
-  const startRoom = async (room: GroupRoom) => {
+  const startRoom = async (room: GroupRoom, mode: GroupRecommendationMode) => {
     if (!props.activeProfile) return;
     try {
       await api.createGroupSession(
@@ -671,9 +709,10 @@ function Group(props: SharedProps) {
         props.activeProfile.id,
         room.members.map((member) => member.profileId),
         room.id,
+        mode,
       );
       setSessionRevision((value) => value + 1);
-      props.flash(`Movie night started in ${room.name}`);
+      props.flash(`${groupModeTitle(mode)} movie night started in ${room.name}`);
     } catch (reason) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t start session");
     }
@@ -697,7 +736,7 @@ function Group(props: SharedProps) {
           {selected && <section className="group-summary card"><div><h2>{selected.name}</h2><p>{selected.members.length} member{selected.members.length === 1 ? "" : "s"}</p></div><button className="button" onClick={invite}>Create room link</button>{inviteInfo && <div className="invite-link"><label><span>Share this link for {inviteInfo.roomName}</span><input readOnly value={inviteInfo.url} onFocus={(event) => event.currentTarget.select()} /></label><button className="button" onClick={revokeInvite}>Revoke invitation</button></div>}<div className="member-list">{selected.members.map((member) => <span key={member.profileId}>{member.name} · {member.needsOnboarding ? "needs more onboarding" : `${member.feedbackCount} preferences`}{((selected.ownerProfileId === props.activeProfile?.id && member.profileId !== selected.ownerProfileId) || (member.profileId === props.activeProfile?.id && member.profileId !== selected.ownerProfileId)) && <button onClick={() => removeMember(member.profileId)}>{member.profileId === props.activeProfile?.id ? "Leave" : "Remove"}</button>}</span>)}</div></section>}
           <label className="strategy-row card"><span><strong>Ranking strategy</strong><small>Balanced emphasizes average enjoyment; Everyone matters emphasizes the least-satisfied member.</small></span><select value={strategy} onChange={(event) => setStrategy(event.target.value as typeof strategy)}><option value="balanced">Balanced</option><option value="everyone_matters">Everyone matters</option></select></label>
           <label className="switch-row card"><span><strong>Include already watched movies</strong><small>Off by default so nobody gets a repeat.</small></span><input type="checkbox" role="switch" checked={includeWatched} onChange={(event) => setIncludeWatched(event.target.checked)} /></label>
-          {roomState.loading ? <Skeleton count={2} /> : roomState.error ? <ErrorState message={roomState.error} /> : rooms.length > 0 ? <div className="room-list">{selected?.ownerProfileId === props.activeProfile?.id && <p className="compromise-note">You own this group, so every room is listed. Friends only see the room for the link they opened.</p>}{rooms.map((room) => <RoomPanel key={room.id} room={room} session={(sessionListState.data ?? []).find((session) => session.status === "active" && session.roomId === room.id)} strategy={strategy} includeWatched={includeWatched} sessionRevision={sessionRevision} highlighted={room.id === highlightedRoomId} onStart={startRoom} onChanged={() => setSessionRevision((value) => value + 1)} {...props} />)}</div> : selected && selected.members.length < 2 ? <Empty title="Waiting for a room" text="Create a room link. Anyone who opens a different person’s link joins a different room." /> : null}
+          {roomState.loading ? <Skeleton count={2} /> : roomState.error ? <ErrorState message={roomState.error} /> : rooms.length > 0 ? <div className="room-list">{selected?.ownerProfileId === props.activeProfile?.id && <p className="compromise-note">You own this group, so every room is listed. Friends only see the room for the link they opened.</p>}{rooms.map((room) => <RoomPanel key={room.id} room={room} session={(sessionListState.data ?? []).find((session) => session.status === "active" && session.roomId === room.id)} strategy={strategy} includeWatched={includeWatched} sessionRevision={sessionRevision} highlighted={room.id === highlightedRoomId} onStart={startRoom} onChanged={() => { setSessionRevision((value) => value + 1); setRefresh((value) => value + 1); }} {...props} />)}</div> : selected && selected.members.length < 2 ? <Empty title="Waiting for a room" text="Create a room link. Anyone who opens a different person’s link joins a different room." /> : null}
           {legacySession && <section className="card group-session-panel"><p className="eyebrow">Live group session</p><h2>Consensus feed</h2><p>Every participant has one vote. A veto removes that movie from this session only.</p>{sessionMovieState.loading ? <Skeleton count={1} /> : sessionMovieState.data?.[0] && <><MovieCard movie={sessionMovieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(sessionMovieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(sessionMovieState.data![0], "like")}>Like</button></div></>}</section>}
           {showSharedList && selected && selected.members.length >= 2 && <><p className="compromise-note">Group scores are estimates. Conflicts are labeled “Best available compromise”; no result promises everyone will like it.</p><AsyncMovies loading={loading} error={error} movies={data} {...props} /></>}
         </>}
@@ -715,9 +754,11 @@ function RoomPanel({
   includeWatched: boolean;
   sessionRevision: number;
   highlighted: boolean;
-  onStart: (room: GroupRoom) => void;
+  onStart: (room: GroupRoom, mode: GroupRecommendationMode) => void;
   onChanged: () => void;
 } & SharedProps) {
+  const [recommendationMode, setRecommendationMode] =
+    useState<GroupRecommendationMode>("fair_consensus");
   const inRoom = room.members.some((member) => member.profileId === props.activeProfile?.id);
   const participating = !!session && !!props.activeProfile && session.participantProfileIds.includes(props.activeProfile.id);
   const movieState = useRemote(
@@ -742,14 +783,66 @@ function RoomPanel({
       props.flash(reason instanceof Error ? reason.message : "Couldn’t save vote");
     }
   };
+  const isHost = props.activeProfile?.id === room.hostProfileId;
+  const copyRoomLink = async () => {
+    if (!props.activeProfile) return;
+    try {
+      const link = await api.roomInviteLink(room.groupId, room.id, props.activeProfile.id);
+      let copied = false;
+      try {
+        if (navigator.clipboard) {
+          await navigator.clipboard.writeText(link.invite_url);
+          copied = true;
+        }
+      } catch {
+        copied = false;
+      }
+      props.flash(copied ? `${room.name} link copied` : `${room.name} link ready — copy from the address bar if needed`);
+    } catch (reason) {
+      props.flash(reason instanceof Error ? reason.message : "Couldn’t copy room link");
+    }
+  };
+  const deleteRoom = async () => {
+    if (!props.activeProfile || !window.confirm(`Delete ${room.name}? This cannot be undone.`)) return;
+    try {
+      await api.deleteRoom(room.groupId, room.id, props.activeProfile.id);
+      onChanged();
+      props.flash(`${room.name} deleted`);
+    } catch (reason) {
+      props.flash(reason instanceof Error ? reason.message : "Couldn’t delete room");
+    }
+  };
+  const removeMember = async (memberProfileId: number) => {
+    if (!props.activeProfile) return;
+    try {
+      await api.removeRoomMember(room.groupId, room.id, memberProfileId, props.activeProfile.id);
+      onChanged();
+      props.flash(memberProfileId === props.activeProfile.id ? "You left the room" : "Removed from room");
+    } catch (reason) {
+      props.flash(reason instanceof Error ? reason.message : "Couldn’t update room membership");
+    }
+  };
   return (
     <article className={`card room-card ${highlighted ? "highlighted" : ""}`}>
       <p className="eyebrow">Room</p>
       <h2>{room.name}</h2>
       <p>Hosted by {room.hostName}. Only people who opened this link are in this room.</p>
-      <div className="member-list">{room.members.map((member) => <span key={member.profileId}>{member.name}{member.host ? " · host" : ""}</span>)}</div>
-      {inRoom ? <button className="button primary" onClick={() => onStart(room)} disabled={room.members.length < 2 || !!session}>{session ? "Movie night active" : "Start movie night"}</button> : <p>You can see this room because you own the group.</p>}
-      {participating && <div className="group-session-panel"><h3>Consensus feed</h3><p>Every participant has one vote. A veto removes that movie from this room only.</p>{movieState.loading ? <Skeleton count={1} /> : movieState.data?.[0] && <><MovieCard movie={movieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(movieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(movieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(movieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(movieState.data![0], "like")}>Like</button></div></>}</div>}
+      {isHost && <div className="room-actions"><button className="button" type="button" onClick={copyRoomLink}>Copy room link</button><button className="button danger-button" type="button" onClick={deleteRoom}>Delete room</button></div>}
+      <div className="member-list">{room.members.map((member) => <span key={member.profileId}>{member.name}{member.host ? " · host" : ""}{(isHost && !member.host) || (member.profileId === props.activeProfile?.id && !member.host) ? <button type="button" onClick={() => removeMember(member.profileId)}>{member.profileId === props.activeProfile?.id ? "Leave" : "Remove"}</button> : null}</span>)}</div>
+      {isHost && !session && <fieldset className="recommendation-mode-picker">
+        <legend>How should CineMatch choose for this room?</legend>
+        <p>The personal ML model scores movies for each member first. This mode controls how those scores are combined.</p>
+        <div className="recommendation-mode-grid">
+          {GROUP_RECOMMENDATION_MODES.map((mode) => <label className="recommendation-mode" key={mode.id}>
+            <input type="radio" name={`recommendation-mode-${room.id}`} value={mode.id} checked={recommendationMode === mode.id} onChange={() => setRecommendationMode(mode.id)} />
+            <span><strong>{mode.title}{mode.recommended ? " · Recommended" : ""}</strong><small>{mode.description}</small><em>{mode.formula}</em></span>
+          </label>)}
+        </div>
+        <button className="button primary" type="button" onClick={() => onStart(room, recommendationMode)} disabled={room.members.length < 2}>Start with {groupModeTitle(recommendationMode)}</button>
+      </fieldset>}
+      {!isHost && inRoom && !session && <p className="compromise-note">Waiting for {room.hostName} to choose a recommendation mode and start movie night.</p>}
+      {!inRoom && <p>You can see this room because you own the group.</p>}
+      {participating && session && <div className="group-session-panel"><h3>{groupModeTitle(session.rankingAlgorithm)} consensus feed</h3><p>Mode: <strong>{groupModeTitle(session.rankingAlgorithm)}</strong>. Every participant has one vote; a veto removes that movie from this room only.</p>{movieState.loading ? <Skeleton count={1} /> : movieState.data?.[0] && <><MovieCard movie={movieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(movieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(movieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(movieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(movieState.data![0], "like")}>Like</button></div></>}</div>}
       {room.members.length < 2 ? <p className="compromise-note">Waiting for someone to open this link.</p> : <><p className="compromise-note">Scores in this room use only these members.</p><AsyncMovies loading={ranked.loading} error={ranked.error} movies={ranked.data} {...props} /></>}
     </article>
   );
@@ -829,9 +922,7 @@ function WishlistView(props: SharedProps) {
 }
 
 function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setReadOnly: (value: boolean) => void; user: User; setUser: (user: User) => void; logout: () => void; bumpFeed: () => void }) {
-  const { data, error, loading } = useRemote(api.settings);
-  const [country, setCountry] = useState(user.country ?? "");
-  const [providers, setProviders] = useState(user.streamingProviderIds.join(", "));
+  const { data, error } = useRemote(api.settings);
   const [username, setUsername] = useState(user.username);
   const [email, setEmail] = useState(user.email);
   const [newPassword, setNewPassword] = useState("");
@@ -847,17 +938,6 @@ function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setRea
     setUsername(user.username);
     setEmail(user.email);
   }, [user.username, user.email]);
-  const saveServices = async (event: FormEvent) => {
-    event.preventDefault();
-    const ids = providers.split(",").map((value) => Number(value.trim())).filter((value) => Number.isInteger(value) && value > 0);
-    try {
-      const updated = await api.updateServices(country, ids);
-      setUser(updated);
-      setMessage("Streaming availability settings saved.");
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : "Couldn’t save streaming settings");
-    }
-  };
   const sendCode = async (event: FormEvent, purpose: "username" | "email" | "password") => {
     event.preventDefault();
     if (!currentPassword) {
@@ -921,8 +1001,8 @@ function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setRea
     }
   };
   return (
-    <Page eyebrow="System" title="Settings & data" intro="Update your account, reset recommendations, and see what powers your picks.">
-      {loading ? <Skeleton count={2} /> : error ? <ErrorState message={error} /> : data && <SettingsCards settings={data} />}
+    <Page eyebrow="System" title="Settings" intro="Update your account and reset recommendations.">
+      {error && <ErrorState message={error} />}
       <section className="card account-card">
         <h2>Account</h2>
         <p>Signed in as {user.username}. Username and password codes go to your current email. An email change is confirmed at the new address.</p>
@@ -947,13 +1027,6 @@ function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setRea
         </form>}
         <button className="button" type="button" onClick={logout}>Log out</button>
       </section>
-      <form className="card settings-form" onSubmit={saveServices}>
-        <h2>Streaming availability</h2>
-        <label>Country code<input value={country} maxLength={2} placeholder="US" onChange={(event) => setCountry(event.target.value.toUpperCase())} /></label>
-        <label>TMDB provider IDs<input value={providers} placeholder="8, 9, 337" onChange={(event) => setProviders(event.target.value)} /></label>
-        <small>Availability may be missing or stale. Provider data is attributed to JustWatch.</small>
-        <button className="button primary" disabled={readOnly}>Save services</button>
-      </form>
       <section className="card account-card">
         <h2>Recommendation controls</h2>
         <p>Reset likes and dislikes without deleting your account, wishlist, or watch history.</p>
@@ -962,10 +1035,6 @@ function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setRea
       {message && <p role="status">{message}</p>}
     </Page>
   );
-}
-
-function SettingsCards({ settings }: { settings: Settings }) {
-  return <div className="settings-grid"><section className="card"><p className="eyebrow">Active model</p><h2>{settings.activeModel}</h2><p>The selected model is based on the latest available evaluation, with a safe popularity fallback.</p><Link to="/wishlist">View want to watch →</Link></section><section className="card"><p className="eyebrow">Dataset</p><h2>{settings.dataset}</h2><dl><div><dt>Movies</dt><dd>{settings.movieCount.toLocaleString()}</dd></div><div><dt>Ratings</dt><dd>{settings.ratingCount.toLocaleString()}</dd></div><div><dt>Last trained</dt><dd>{settings.lastTrained ? new Date(settings.lastTrained).toLocaleDateString() : "Pending"}</dd></div><div><dt>Access</dt><dd>{settings.readOnly ? "Read only" : "Read & write"}</dd></div></dl></section><section className="card full"><p className="eyebrow">Metadata</p><h2>Catalog enrichment</h2><p>{settings.tmdbAvailable ? "TMDB enrichment is configured." : "TMDB is not configured; MovieLens metadata and poster placeholders remain available."}</p></section></div>;
 }
 
 function AsyncMovies({ loading, error, movies, ...props }: { loading: boolean; error: string; movies?: Movie[] } & SharedProps) {

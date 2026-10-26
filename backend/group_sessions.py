@@ -71,13 +71,7 @@ def rank_group_session(
             score += {"love": 0.25, "like": 0.15, "dislike": -0.25}.get(action or "", 0.0)
             member_scores.append(min(1.0, max(0.0, score)))
         group_score = aggregate_group_scores(member_scores, group_session.ranking_algorithm)
-        spread = max(member_scores) - min(member_scores)
-        if spread <= 0.2:
-            reason = "Strong match across all participating members"
-        elif min(member_scores) >= 0.5:
-            reason = "A fair compromise with no low member score"
-        else:
-            reason = "Balances average fit with the least-satisfied member"
+        reason = _group_reason(member_scores, group_session.ranking_algorithm)
         ranked.append(
             GroupRankedMovie(
                 movie=movie_map[movie_id],
@@ -127,6 +121,21 @@ def _minmax(values: dict[int, float]) -> dict[int, float]:
     if high - low <= 1e-12:
         return {movie_id: 0.5 for movie_id in values}
     return {movie_id: (value - low) / (high - low) for movie_id, value in values.items()}
+
+
+def _group_reason(scores: list[float], algorithm: str) -> str:
+    spread = max(scores) - min(scores)
+    if algorithm == "average":
+        return "Crowd Favorite: strongest average match across the room"
+    if algorithm == "least_misery":
+        return "No Regrets: protects the least-satisfied member"
+    if algorithm == "nash":
+        return "All On Board: rewards movies everyone scores reasonably well"
+    if spread <= 0.2:
+        return "Balanced Mix: strong match across all participating members"
+    if min(scores) >= 0.5:
+        return "Balanced Mix: a fair compromise with no low member score"
+    return "Balanced Mix: balances average fit with the least-satisfied member"
 
 
 def _eligible_candidates(
