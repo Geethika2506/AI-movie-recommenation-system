@@ -1125,7 +1125,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         return InviteOut(
             id=invite.id,
             token=token,
-            invite_url=f"{settings.public_app_url.rstrip('/')}/invite/{token}",
+            invite_url=f"{settings.public_app_url.rstrip('/')}/#/invite/{token}",
             expires_at=invite.expires_at,
             room_id=room.id,
             room_name=room.name,
