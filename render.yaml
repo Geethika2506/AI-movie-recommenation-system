@@ -1,0 +1,63 @@
+# Render Blueprint — CineMatch (API + static frontend + Postgres)
+# Sync: Dashboard → Blueprints → New Blueprint Instance → this repo (main).
+
+databases:
+  - name: cinematch-db
+    databaseName: cinematch
+    user: cinematch
+    plan: free
+    region: frankfurt
+    postgresMajorVersion: "17"
+    ipAllowList: []
+
+services:
+  - type: web
+    name: AI-movie-recommenation-system
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile.backend
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: CINEMATCH_DATABASE_URL
+        fromDatabase:
+          name: cinematch-db
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cinematch-db
+          property: connectionString
+      - key: CINEMATCH_DATA_DIR
+        value: /app/data
+      - key: CINEMATCH_ARTIFACT_DIR
+        value: /app/artifacts
+      - key: CINEMATCH_CORS_ORIGINS
+        value: https://cinematch-frontend-nif7.onrender.com
+      - key: CINEMATCH_PUBLIC_APP_URL
+        value: https://cinematch-frontend-nif7.onrender.com
+      - key: CINEMATCH_SECURE_COOKIES
+        value: "true"
+      - key: CINEMATCH_LOG_LEVEL
+        value: INFO
+      - key: CINEMATCH_JWT_SECRET
+        generateValue: true
+      - key: CINEMATCH_TMDB_TOKEN
+        sync: false
+
+  - type: web
+    name: cinematch-frontend
+    runtime: static
+    plan: free
+    region: frankfurt
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci --prefix frontend && npm run build --prefix frontend
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://ai-movie-recommenation-system.onrender.com/api
+      - key: VITE_DEMO_FALLBACK
+        value: "true"

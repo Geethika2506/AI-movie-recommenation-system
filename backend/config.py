@@ -7,6 +7,15 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _usable_postgres_url(url: str | None) -> bool:
+    if url is None:
+        return False
+    stripped = url.strip()
+    if not stripped:
+        return False
+    return stripped.startswith(("postgresql://", "postgres://", "postgresql+psycopg://"))
+
+
 def _psycopg_sqlalchemy_url(url: str) -> str:
     if url.startswith("postgresql+psycopg://"):
         return url
@@ -79,8 +88,8 @@ class Settings(BaseSettings):
         explicit = os.environ.get("CINEMATCH_DATABASE_URL")
         pooled = self.neon_pooled_database_url
         direct = self.neon_direct_database_url
-        if pooled and (not explicit or explicit.startswith("sqlite")):
-            self.database_url = _psycopg_sqlalchemy_url(pooled)
+        if _usable_postgres_url(pooled) and (not explicit or explicit.startswith("sqlite")):
+            self.database_url = _psycopg_sqlalchemy_url(pooled.strip())
         if direct:
             self.database_migration_url = _psycopg_sqlalchemy_url(direct)
         elif self.database_migration_url is None:
