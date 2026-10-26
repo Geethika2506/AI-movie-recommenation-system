@@ -1,7 +1,7 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { movies as demoMovies } from "./data";
 import type { GroupRecommendationMode, GroupRoom, GroupSession, Movie, MovieAction, PreferenceResult, Profile, SwipeAction, User } from "./types";
 
@@ -736,7 +736,7 @@ function Group(props: SharedProps) {
           {selected && <section className="group-summary card"><div><h2>{selected.name}</h2><p>{selected.members.length} member{selected.members.length === 1 ? "" : "s"}</p></div><button className="button" onClick={invite}>Create room link</button>{inviteInfo && <div className="invite-link"><label><span>Share this link for {inviteInfo.roomName}</span><input readOnly value={inviteInfo.url} onFocus={(event) => event.currentTarget.select()} /></label><button className="button" onClick={revokeInvite}>Revoke invitation</button></div>}<div className="member-list">{selected.members.map((member) => <span key={member.profileId}>{member.name} · {member.needsOnboarding ? "needs more onboarding" : `${member.feedbackCount} preferences`}{((selected.ownerProfileId === props.activeProfile?.id && member.profileId !== selected.ownerProfileId) || (member.profileId === props.activeProfile?.id && member.profileId !== selected.ownerProfileId)) && <button onClick={() => removeMember(member.profileId)}>{member.profileId === props.activeProfile?.id ? "Leave" : "Remove"}</button>}</span>)}</div></section>}
           <label className="strategy-row card"><span><strong>Ranking strategy</strong><small>Balanced emphasizes average enjoyment; Everyone matters emphasizes the least-satisfied member.</small></span><select value={strategy} onChange={(event) => setStrategy(event.target.value as typeof strategy)}><option value="balanced">Balanced</option><option value="everyone_matters">Everyone matters</option></select></label>
           <label className="switch-row card"><span><strong>Include already watched movies</strong><small>Off by default so nobody gets a repeat.</small></span><input type="checkbox" role="switch" checked={includeWatched} onChange={(event) => setIncludeWatched(event.target.checked)} /></label>
-          {roomState.loading ? <Skeleton count={2} /> : roomState.error ? <ErrorState message={roomState.error} /> : rooms.length > 0 ? <div className="room-list">{selected?.ownerProfileId === props.activeProfile?.id && <p className="compromise-note">You own this group, so every room is listed. Friends only see the room for the link they opened.</p>}{rooms.map((room) => <RoomPanel key={room.id} room={room} session={(sessionListState.data ?? []).find((session) => session.status === "active" && session.roomId === room.id)} strategy={strategy} includeWatched={includeWatched} sessionRevision={sessionRevision} highlighted={room.id === highlightedRoomId} onStart={startRoom} onChanged={() => { setSessionRevision((value) => value + 1); setRefresh((value) => value + 1); }} {...props} />)}</div> : selected && selected.members.length < 2 ? <Empty title="Waiting for a room" text="Create a room link. Anyone who opens a different person’s link joins a different room." /> : null}
+          {roomState.loading ? <Skeleton count={2} /> : roomState.error ? <ErrorState message={roomState.error} /> : rooms.length > 0 ? <div className="room-list">{selected?.ownerProfileId === props.activeProfile?.id && <p className="compromise-note">You own this group, so every room is listed. Friends only see the room for the link they opened.</p>}{rooms.map((room) => <RoomPanel key={room.id} room={room} groupOwnerProfileId={selected?.ownerProfileId} session={(sessionListState.data ?? []).find((session) => session.status === "active" && session.roomId === room.id)} strategy={strategy} includeWatched={includeWatched} sessionRevision={sessionRevision} highlighted={room.id === highlightedRoomId} onStart={startRoom} onChanged={() => { setSessionRevision((value) => value + 1); setRefresh((value) => value + 1); }} {...props} />)}</div> : selected && selected.members.length < 2 ? <Empty title="Waiting for a room" text="Create a room link. Anyone who opens a different person’s link joins a different room." /> : null}
           {legacySession && <section className="card group-session-panel"><p className="eyebrow">Live group session</p><h2>Consensus feed</h2><p>Every participant has one vote. A veto removes that movie from this session only.</p>{sessionMovieState.loading ? <Skeleton count={1} /> : sessionMovieState.data?.[0] && <><MovieCard movie={sessionMovieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(sessionMovieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(sessionMovieState.data![0], "like")}>Like</button></div></>}</section>}
           {showSharedList && selected && selected.members.length >= 2 && <><p className="compromise-note">Group scores are estimates. Conflicts are labeled “Best available compromise”; no result promises everyone will like it.</p><AsyncMovies loading={loading} error={error} movies={data} {...props} /></>}
         </>}
@@ -746,9 +746,10 @@ function Group(props: SharedProps) {
 }
 
 function RoomPanel({
-  room, session, strategy, includeWatched, sessionRevision, highlighted, onStart, onChanged, ...props
+  room, groupOwnerProfileId, session, strategy, includeWatched, sessionRevision, highlighted, onStart, onChanged, ...props
 }: {
   room: GroupRoom;
+  groupOwnerProfileId?: number;
   session?: GroupSession;
   strategy: "balanced" | "everyone_matters";
   includeWatched: boolean;
@@ -759,19 +760,30 @@ function RoomPanel({
 } & SharedProps) {
   const [recommendationMode, setRecommendationMode] =
     useState<GroupRecommendationMode>("fair_consensus");
+  const [deleting, setDeleting] = useState(false);
+  const [removed, setRemoved] = useState(false);
   const inRoom = room.members.some((member) => member.profileId === props.activeProfile?.id);
-  const participating = !!session && !!props.activeProfile && session.participantProfileIds.includes(props.activeProfile.id);
+  const isHost = props.activeProfile?.id === room.hostProfileId;
+  const canDeleteRoom =
+    !!props.activeProfile &&
+    (isHost || props.activeProfile.id === groupOwnerProfileId);
+  const participating =
+    !removed &&
+    !deleting &&
+    !!session &&
+    !!props.activeProfile &&
+    session.participantProfileIds.includes(props.activeProfile.id);
   const movieState = useRemote(
     () => participating && props.activeProfile
       ? api.sessionRecommendations(session.id, props.activeProfile.id)
       : Promise.resolve([]),
-    [participating, session?.id, props.activeProfile?.id, sessionRevision],
+    [participating, session?.id, props.activeProfile?.id, sessionRevision, removed, deleting],
   );
   const ranked = useRemote(
-    () => room.members.length >= 2 && props.activeProfile
+    () => !removed && !deleting && room.members.length >= 2 && props.activeProfile
       ? api.roomRecommendations(room.groupId, room.id, props.activeProfile.id, strategy, includeWatched)
       : Promise.resolve([]),
-    [room.groupId, room.id, room.members.length, props.activeProfile?.id, strategy, includeWatched, props.feedRevision],
+    [removed, deleting, room.groupId, room.id, room.members.length, props.activeProfile?.id, strategy, includeWatched, props.feedRevision],
   );
   const vote = async (movie: Movie, action: "like" | "love" | "dislike" | "veto") => {
     if (!session || !props.activeProfile) return;
@@ -783,7 +795,6 @@ function RoomPanel({
       props.flash(reason instanceof Error ? reason.message : "Couldn’t save vote");
     }
   };
-  const isHost = props.activeProfile?.id === room.hostProfileId;
   const copyRoomLink = async () => {
     if (!props.activeProfile) return;
     try {
@@ -804,14 +815,25 @@ function RoomPanel({
   };
   const deleteRoom = async () => {
     if (!props.activeProfile || !window.confirm(`Delete ${room.name}? This cannot be undone.`)) return;
+    setDeleting(true);
     try {
       await api.deleteRoom(room.groupId, room.id, props.activeProfile.id);
+      setRemoved(true);
       onChanged();
       props.flash(`${room.name} deleted`);
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 404) {
+        setRemoved(true);
+        onChanged();
+        props.flash(`${room.name} deleted`);
+        return;
+      }
       props.flash(reason instanceof Error ? reason.message : "Couldn’t delete room");
+    } finally {
+      setDeleting(false);
     }
   };
+  if (removed) return null;
   const removeMember = async (memberProfileId: number) => {
     if (!props.activeProfile) return;
     try {
@@ -827,7 +849,8 @@ function RoomPanel({
       <p className="eyebrow">Room</p>
       <h2>{room.name}</h2>
       <p>Hosted by {room.hostName}. Only people who opened this link are in this room.</p>
-      {isHost && <div className="room-actions"><button className="button" type="button" onClick={copyRoomLink}>Copy room link</button><button className="button danger-button" type="button" onClick={deleteRoom}>Delete room</button></div>}
+      {isHost && <div className="room-actions"><button className="button" type="button" onClick={copyRoomLink}>Copy room link</button>{canDeleteRoom && <button className="button danger-button" type="button" onClick={deleteRoom} disabled={deleting}>{deleting ? "Deleting…" : "Delete room"}</button>}</div>}
+      {!isHost && canDeleteRoom && <div className="room-actions"><button className="button danger-button" type="button" onClick={deleteRoom} disabled={deleting}>{deleting ? "Deleting…" : "Delete room"}</button></div>}
       <div className="member-list">{room.members.map((member) => <span key={member.profileId}>{member.name}{member.host ? " · host" : ""}{(isHost && !member.host) || (member.profileId === props.activeProfile?.id && !member.host) ? <button type="button" onClick={() => removeMember(member.profileId)}>{member.profileId === props.activeProfile?.id ? "Leave" : "Remove"}</button> : null}</span>)}</div>
       {isHost && !session && <fieldset className="recommendation-mode-picker">
         <legend>How should CineMatch choose for this room?</legend>

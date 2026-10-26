@@ -1,5 +1,9 @@
 # CineMatch
 
+**Live app:** [cinematch-frontend-nif7.onrender.com](https://cinematch-frontend-nif7.onrender.com) · **API:** [ai-movie-recommenation-system.onrender.com](https://ai-movie-recommenation-system.onrender.com) · **OpenAPI:** [/docs](https://ai-movie-recommenation-system.onrender.com/docs)
+
+Hosted on **[Render](https://render.com)** (web service + static site) · Database on **[Neon Postgres](https://neon.tech)** (pgvector). See [live deployment](#live-deployment) for all links.
+
 CineMatch is a movie **discovery and decision** product. You create a profile, tell it what you like, and it ranks a catalog for you. When several people want to watch together, it ranks a shared shortlist so nobody’s taste is ignored. It does **not** stream films. There is no player, no licensed library, and no watch-time objective.
 
 The system is an end-to-end recommender: a React app, a FastAPI API, **Neon Postgres** (with pgvector) as the database, and **Render** as the host for the API and the static site. Ranking mixes classical baselines, sentence-transformer embeddings, implicit collaborative filtering, a hybrid ranker, and gated learning-to-rank and bandit policies. Every recommendation can say *why* it appeared.
@@ -8,8 +12,40 @@ The system is an end-to-end recommender: a React app, a FastAPI API, **Neon Post
 
 ---
 
+## Live deployment
+
+Production runs on **Render** (compute + CDN static frontend) with **Neon** as the managed PostgreSQL database when `DATABASE_URL` / `DATABASE_URL_UNPOOLED` are set on the API service. Pushes to `main` trigger Render **autoDeploy** (see [`render.yaml`](render.yaml)).
+
+### URLs (production)
+
+| What | URL |
+|------|-----|
+| **Web app (start here)** | [https://cinematch-frontend-nif7.onrender.com](https://cinematch-frontend-nif7.onrender.com) |
+| **REST API base** | [https://ai-movie-recommenation-system.onrender.com](https://ai-movie-recommenation-system.onrender.com) |
+| **API routes (prefix)** | `https://ai-movie-recommenation-system.onrender.com/api` |
+| **Interactive API docs** | [https://ai-movie-recommenation-system.onrender.com/docs](https://ai-movie-recommenation-system.onrender.com/docs) |
+| **OpenAPI JSON** | [https://ai-movie-recommenation-system.onrender.com/openapi.json](https://ai-movie-recommenation-system.onrender.com/openapi.json) |
+| **Health** | [https://ai-movie-recommenation-system.onrender.com/health](https://ai-movie-recommenation-system.onrender.com/health) |
+| **Readiness (DB)** | [https://ai-movie-recommenation-system.onrender.com/ready](https://ai-movie-recommenation-system.onrender.com/ready) |
+
+The frontend build embeds `VITE_API_URL=https://ai-movie-recommenation-system.onrender.com/api` (see `render.yaml`). CORS and invite links use `https://cinematch-frontend-nif7.onrender.com`.
+
+### Platforms
+
+| Platform | Role in CineMatch | Where to go |
+|----------|-------------------|-------------|
+| **[Render](https://render.com)** | Docker **web service** (`Dockerfile.backend`) for FastAPI; **static site** for the Vite build; optional Blueprint Postgres fallback in `render.yaml` | [Render dashboard](https://dashboard.render.com) · [Web services](https://render.com/docs/web-services) · [Static sites](https://render.com/docs/static-sites) · [Blueprints](https://render.com/docs/infrastructure-as-code) |
+| **[Neon](https://neon.tech)** | Managed **Postgres 17** with **pgvector**: accounts, catalog, embeddings, events, groups, votes | [Neon console](https://console.neon.tech) · [Connection pooling](https://neon.tech/docs/connect/connection-pooling) · [pgvector on Neon](https://neon.tech/docs/extensions/pgvector) |
+
+**Neon wiring in this repo:** `backend/config.py` maps `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED` (direct, for Alembic). [`neon.ts`](neon.ts) configures branch TTL for dev branches; app auth is JWT in the API, not Neon Auth.
+
+**Render wiring in this repo:** [`render.yaml`](render.yaml) defines service names, regions (Frankfurt), env vars, and health check path `/health`. Free-tier services may **sleep after inactivity**; the first request after sleep can take tens of seconds.
+
+---
+
 ## Table of contents
 
+- [Live deployment](#live-deployment)
 - [What the app is](#what-the-app-is)
 - [Host movie night modes](#host-movie-night-modes)
 - [A session, start to finish](#a-session-start-to-finish)
@@ -650,12 +686,12 @@ Production is two Render services and one Neon database.
 | Site | Render static site | `npm ci` and `npm run build` in `frontend/`. Publishes `frontend/dist`. SPA rewrite sends every path to `index.html`. |
 | Database | **Neon Postgres** | Accounts, catalog, 384-d vectors, events, groups, votes, model-promotion audit. Pooled connections for requests. Direct connections for migrations. |
 
-Blueprint URLs currently checked in:
+Production URLs match [Live deployment](#live-deployment):
 
-- Site: `https://cinematch-frontend-nif7.onrender.com`
-- API: `https://ai-movie-recommenation-system.onrender.com`
+- **Web app:** [https://cinematch-frontend-nif7.onrender.com](https://cinematch-frontend-nif7.onrender.com)
+- **API:** [https://ai-movie-recommenation-system.onrender.com](https://ai-movie-recommenation-system.onrender.com)
 
-`VITE_API_URL` is compiled into the static site, so changing the API host means a frontend rebuild.
+`VITE_API_URL` is compiled into the static site, so changing the API host means a frontend rebuild on Render.
 
 ### How the API finds Neon
 

@@ -33,7 +33,7 @@ const sessionKey = (() => {
   return created;
 })();
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
   }
@@ -476,7 +476,12 @@ export const api = {
       `/groups/${groupId}/rooms/${roomId}/invite-link?profile_id=${profileId}`,
     ),
   deleteRoom: (groupId: number, roomId: number, profileId: number) =>
-    request<void>(`/groups/${groupId}/rooms/${roomId}?profile_id=${profileId}`, { method: "DELETE" }),
+    request<void>(`/groups/${groupId}/rooms/${roomId}?profile_id=${profileId}`, { method: "DELETE" }).then(
+      (result) => {
+        invalidateGetCache("/groups/");
+        return result;
+      },
+    ),
   removeRoomMember: (
     groupId: number,
     roomId: number,
@@ -555,4 +560,3 @@ export const api = {
   })).catch(() => settings),
 };
 
-export { ApiError };

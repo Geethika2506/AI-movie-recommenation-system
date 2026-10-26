@@ -1322,8 +1322,8 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
     ) -> Response:
         profile = _owned_profile_or_404(db, profile_id, request)
         group = _group_member_or_404(db, group_id, profile.id)
-        room = _visible_room_or_404(db, group, room_id, profile.id)
-        _room_host_or_403(room, profile.id)
+        room = _room_in_group_or_404(db, group_id, room_id)
+        _room_delete_authorizer(group, room, profile.id)
         _cancel_active_room_sessions(db, room.id)
         invite_id = room.invite_id
         db.delete(room)
@@ -1994,6 +1994,27 @@ def _visible_room_or_404(db: Session, group: Group, room_id: int, profile_id: in
     if not visible:
         raise HTTPException(status_code=404, detail="room not found")
     return visible
+
+
+def _room_in_group_or_404(db: Session, group_id: int, room_id: int) -> GroupRoom:
+    room = db.scalar(
+        select(GroupRoom).where(
+            GroupRoom.id == room_id,
+            GroupRoom.group_id == group_id,
+        )
+    )
+    if not room:
+        raise HTTPException(status_code=404, detail="room not found")
+    return room
+
+
+def _room_delete_authorizer(group: Group, room: GroupRoom, profile_id: int) -> None:
+    if room.host_profile_id == profile_id or group.owner_profile_id == profile_id:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="only the room host or group owner can delete this room",
+    )
 
 
 def _room_output(db: Session, room: GroupRoom) -> GroupRoomOut:

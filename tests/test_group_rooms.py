@@ -169,3 +169,19 @@ def test_each_invite_link_opens_a_separate_room(tmp_path: Path) -> None:
             params={"profile_id": alice},
         ).json()
         assert alice_room["name"] not in {room["name"] for room in remaining}
+
+        owner_deletes_bob_room = client.delete(
+            f"/api/groups/{group['id']}/rooms/{bob_room['id']}",
+            headers=A,
+            params={"profile_id": alice},
+        )
+        assert owner_deletes_bob_room.status_code == 204
+        bob_room_names = {
+            room["name"]
+            for room in client.get(
+                f"/api/groups/{group['id']}/rooms",
+                headers=B,
+                params={"profile_id": bob},
+            ).json()
+        }
+        assert "Bob's room" not in bob_room_names
