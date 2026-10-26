@@ -12,6 +12,8 @@ data/*
 !data/.gitkeep
 artifacts/*
 !artifacts/.gitkeep
+.cursor/
+*.tsbuildinfo
 frontend/node_modules/
 frontend/dist/
 frontend/.playwright-browsers/
