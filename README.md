@@ -43,25 +43,9 @@ The **static site** build on Render embeds `VITE_API_URL=https://ai-movie-recomm
 
 ### Demo video
 
-Walkthrough of the hosted app (onboarding, recommendations, group movie night). Script: [docs/demo-script.md](docs/demo-script.md).
+Walkthrough of the hosted app (onboarding, recommendations, group movie night). Script: [docs/demo-script.md](docs/demo-script.md). File in repo: [`docs/cinematch-demo.web.mp4`](docs/cinematch-demo.web.mp4) (H.264, ~3.4 MB).
 
-GitHub **does not** play `<video src="docs/...">` from the repository (those tags are stripped or show “not supported”). Use the **Watch** link below, or embed once via GitHub’s asset host (step 2).
-
-1. **Watch (works after you push)** — H.264 copy for browsers (~3.4 MB):
-
-[![Watch the CineMatch demo](docs/cinematch-demo-poster.jpg)](https://github.com/Geethika2506/AI-movie-recommenation-system/raw/main/docs/cinematch-demo.web.mp4)
-
-2. **Optional inline player in this README** — on github.com, edit this file, drag [`docs/cinematch-demo.web.mp4`](docs/cinematch-demo.web.mp4) into the editor (under **10 MB** on free GitHub), copy the `github.com/user-attachments/assets/…` or `user-images.githubusercontent.com/…` URL GitHub inserts, and add:
-
-```html
-<video src="PASTE_URL_FROM_GITHUB_UPLOAD" controls width="100%"></video>
-```
-
-Source screen recording (HEVC, ~213 MB) can stay local as `docs/cinematch-demo.mp4`; it is gitignored so clones stay small. Re-encode the web copy with:
-
-```bash
-ffmpeg -i docs/cinematch-demo.mp4 -vf "scale=720:-2" -c:v libx264 -crf 32 -c:a aac -b:a 64k -movflags +faststart docs/cinematch-demo.web.mp4
-```
+https://cdn.jsdelivr.net/gh/Geethika2506/AI-movie-recommenation-system@main/docs/cinematch-demo.web.mp4
 
 ---
 
