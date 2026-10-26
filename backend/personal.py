@@ -26,29 +26,27 @@ PROFILE_FEATURE_VERSION = "embedding-taste-v1"
 ONBOARDING_CONFIDENCE = 0.28
 
 
-def _top_embeddings_for_genre(
-    session: Session,
-    embeddings: dict[int, np.ndarray],
-    genre: str,
-    limit: int,
-) -> list[np.ndarray]:
-    dialect = session.get_bind().dialect.name
-    rows = list(
-        session.scalars(
-            select(Movie)
-            .where(movie_has_genre(genre, dialect=dialect))
-            .order_by(Movie.popularity_score.desc())
-            .limit(limit * 3)
+def _embeddings_for_movies(session: Session, movie_ids: set[int]) -> dict[int, np.ndarray]:
+    if not movie_ids:
+        return {}
+    rows = session.execute(
+        select(MovieEmbedding.movie_id, MovieEmbedding.embedding).where(
+            MovieEmbedding.movie_id.in_(movie_ids)
         )
-    )
-    vectors: list[np.ndarray] = []
-    for movie in rows:
-        vector = embeddings.get(movie.id)
-        if vector is not None:
-            vectors.append(vector)
-        if len(vectors) >= limit:
-            break
-    return vectors
+    ).all()
+    return {movie_id: np.asarray(vector, dtype=np.float32) for movie_id, vector in rows}
+
+
+def _top_embeddings_for_genre(session: Session, genre: str, limit: int) -> list[np.ndarray]:
+    dialect = session.get_bind().dialect.name
+    rows = session.execute(
+        select(MovieEmbedding.embedding)
+        .join(Movie, Movie.id == MovieEmbedding.movie_id)
+        .where(movie_has_genre(genre, dialect=dialect))
+        .order_by(Movie.popularity_score.desc().nullslast(), Movie.id)
+        .limit(limit)
+    ).all()
+    return [np.asarray(row[0], dtype=np.float32) for row in rows]
 
 
 def apply_onboarding_preferences(
@@ -82,18 +80,14 @@ def rebuild_taste_profile(session: Session, profile_id: int) -> UserProfileVecto
             .order_by(PreferenceEvent.id)
         )
     )
-    embedding_rows = session.execute(
-        select(MovieEmbedding.movie_id, MovieEmbedding.embedding)
-    ).all()
-    embeddings = {
-        movie_id: np.asarray(vector, dtype=np.float32) for movie_id, vector in embedding_rows
-    }
-    movies = {
-        movie.id: movie
-        for movie in session.scalars(
-            select(Movie).where(Movie.id.in_({event.movie_id for event in events}))
-        )
-    }
+    event_movie_ids = {event.movie_id for event in events}
+    embeddings = _embeddings_for_movies(session, event_movie_ids)
+    movies: dict[int, Movie] = {}
+    if event_movie_ids:
+        movies = {
+            movie.id: movie
+            for movie in session.scalars(select(Movie).where(Movie.id.in_(event_movie_ids)))
+        }
     weighted: list[np.ndarray] = []
     weights: list[float] = []
     genre_evidence: defaultdict[str, float] = defaultdict(float)
@@ -113,11 +107,11 @@ def rebuild_taste_profile(session: Session, profile_id: int) -> UserProfileVecto
                 genre_evidence[genre] += weight / max(len(movie.genres), 1)
     if not weighted and profile.seed_preferred_genres:
         for genre in profile.seed_preferred_genres:
-            for vector in _top_embeddings_for_genre(session, embeddings, genre, 3):
+            for vector in _top_embeddings_for_genre(session, genre, 3):
                 weighted.append(vector * 2.0)
                 weights.append(2.0)
         for genre in profile.seed_disliked_genres or []:
-            for vector in _top_embeddings_for_genre(session, embeddings, genre, 2):
+            for vector in _top_embeddings_for_genre(session, genre, 2):
                 weighted.append(vector * -1.0)
                 weights.append(1.0)
     if not weighted and not (profile.seed_preferred_genres or profile.seed_disliked_genres):
@@ -176,12 +170,14 @@ def embedding_hybrid_recommendations(
     if profile_vector is None:
         profile_vector = rebuild_taste_profile(session, profile_id)
     if profile_vector is None:
+        pool = min(500, max(limit * 5, 200))
         return recommend_for_profile(
             session,
             profile_id,
             limit,
             include_watched=include_watched,
             discovery=exploration,
+            candidate_limit=pool,
         )
 
     states = list(
@@ -201,19 +197,25 @@ def embedding_hybrid_recommendations(
             )
         )
     )
+    pool_size = min(600, max(limit * 5, 250))
     movie_rows = list(
         session.execute(
-            select(Movie, MovieEmbedding).join(MovieEmbedding, MovieEmbedding.movie_id == Movie.id)
+            select(Movie, MovieEmbedding)
+            .join(MovieEmbedding, MovieEmbedding.movie_id == Movie.id)
+            .order_by(Movie.popularity_score.desc().nullslast(), Movie.id)
+            .limit(pool_size)
         )
     )
     taste = np.asarray(profile_vector.taste_vector, dtype=np.float32)
     if float(np.linalg.norm(taste)) < 1e-9:
+        pool = min(500, max(limit * 5, 200))
         return recommend_for_profile(
             session,
             profile_id,
             limit,
             include_watched=include_watched,
             discovery=exploration,
+            candidate_limit=pool,
         )
     popularities = np.asarray([movie.popularity_score or 0.0 for movie, _ in movie_rows])
     low = float(popularities.min()) if len(popularities) else 0.0

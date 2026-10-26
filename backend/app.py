@@ -864,7 +864,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         pool = embedding_hybrid_recommendations(
             db,
             profile_id,
-            max(200, limit),
+            max(120, limit),
             exploration=discovery / 100,
             collaborative_artifact_dir=settings.artifact_dir / "implicit-als-v1",
         )
@@ -901,7 +901,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         pool = embedding_hybrid_recommendations(
             db,
             profile.id,
-            max(200, limit),
+            max(120, limit),
             include_watched=include_watched,
             diversity=diversity,
             exploration=exploration,

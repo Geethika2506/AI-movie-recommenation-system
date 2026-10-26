@@ -3,6 +3,27 @@ import type { Evaluation, Group, GroupRoom, GroupSession, Movie, MovieAction, Pr
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ?? "/api";
 const demoFallback = import.meta.env.VITE_DEMO_FALLBACK === "true" || import.meta.env.MODE === "test";
+const GET_CACHE_MS = 90_000;
+const getCache = new Map<string, { at: number; value: unknown }>();
+
+function invalidateGetCache(prefix?: string) {
+  if (!prefix) {
+    getCache.clear();
+    return;
+  }
+  for (const key of getCache.keys()) {
+    if (key.startsWith(prefix)) getCache.delete(key);
+  }
+}
+
+async function cachedGet<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  const hit = getCache.get(key);
+  if (hit && Date.now() - hit.at < GET_CACHE_MS) return hit.value as T;
+  const value = await loader();
+  getCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
 let accessToken = "";
 const sessionKey = (() => {
   const existing = localStorage.getItem("cinematch:session");
@@ -304,27 +325,39 @@ export const api = {
     const fallback = movies.filter((movie) => movie.title.toLowerCase().includes(query.toLowerCase()));
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
     if (query) params.set("q", query);
-    const result = await request<ApiMoviePage | Movie[]>(`/movies?${params}`, undefined, fallback);
-    return Array.isArray(result) ? result : result.items.map((movie) => mapMovie(movie));
+    const path = `/movies?${params}`;
+    const cacheKey = query ? "" : `movies:${page}:${pageSize}`;
+    const load = async () => {
+      const result = await request<ApiMoviePage | Movie[]>(path, undefined, fallback);
+      return Array.isArray(result) ? result : result.items.map((movie) => mapMovie(movie));
+    };
+    return cacheKey ? cachedGet(cacheKey, load) : load();
   },
   recommendations: (profileIds: number[], discovery: number, includeWatched = false) => {
     if (!profileIds.length || profileIds.some((id) => id <= 0)) {
       return Promise.resolve([...movies].slice(discovery > 55 ? 2 : 0));
     }
-    return profileIds.length > 1
-      ? request<ApiRecommendation[]>("/recommendations/group", {
-          method: "POST",
-          body: JSON.stringify({ profile_ids: profileIds.map(Number), limit: 48, include_watched: includeWatched }),
-        }).then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row))))
-      : request<ApiRecommendation[]>(
-          `/profiles/${profileIds[0]}/recommendations?limit=48&discovery=${Math.round(discovery)}`,
-        ).then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row))));
+    if (profileIds.length > 1) {
+      return request<ApiRecommendation[]>("/recommendations/group", {
+        method: "POST",
+        body: JSON.stringify({ profile_ids: profileIds.map(Number), limit: 48, include_watched: includeWatched }),
+      }).then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row))));
+    }
+    const cacheKey = `recs:${profileIds[0]}:${Math.round(discovery)}`;
+    return cachedGet(cacheKey, () =>
+      request<ApiRecommendation[]>(
+        `/profiles/${profileIds[0]}/recommendations?limit=48&discovery=${Math.round(discovery)}`,
+      ).then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row)))),
+    );
   },
   discover: (profileId: number) =>
     profileId <= 0
       ? Promise.resolve(movies)
-      : request<ApiRecommendation[]>(`/profiles/${profileId}/discover?limit=60`)
-          .then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row)))),
+      : cachedGet(`discover:${profileId}`, () =>
+          request<ApiRecommendation[]>(`/profiles/${profileId}/discover?limit=60`).then((rows) =>
+            withMatchScores(rows.map((row) => mapMovie(row.movie, row)),
+          ),
+        ),
   movie: (id: number) => request<ApiMovie>(`/movies/${id}`, undefined, undefined)
     .then(mapMovie)
     .catch(() => movies.find((movie) => movie.id === id) ?? movies[0]),
@@ -356,7 +389,11 @@ export const api = {
         preferred_genres: preferredGenres,
         disliked_genres: dislikedGenres,
       }),
-    }).then(mapProfile),
+    }).then((profile) => {
+      invalidateGetCache(`discover:${profileId}`);
+      invalidateGetCache(`recs:${profileId}:`);
+      return mapProfile(profile);
+    }),
   rate: (profileId: number, movieId: number, rating: number) =>
     request<void>(`/profiles/${profileId}/ratings/${movieId}`, { method: "PUT", body: JSON.stringify({ value: rating }) }, undefined),
   act: (profileId: number, movieId: number, action: MovieAction) =>
@@ -388,16 +425,26 @@ export const api = {
         recommendation_request_id: movie.requestId,
         impression_id: movie.impressionId,
       }),
-    }, { movie_id: movie.id, action_id: Date.now(), recommendation_version: 0 }).then((result) => ({
-      movieId: result.movie_id,
-      actionId: result.action_id,
-      recommendationVersion: result.recommendation_version,
-    })),
+    }, { movie_id: movie.id, action_id: Date.now(), recommendation_version: 0 }).then((result) => {
+      invalidateGetCache(`discover:${profileId}`);
+      invalidateGetCache(`recs:${profileId}:`);
+      return {
+        movieId: result.movie_id,
+        actionId: result.action_id,
+        recommendationVersion: result.recommendation_version,
+      };
+    }),
   undoPreference: (profileId: number, action: PreferenceResult) =>
     request<ApiPreference>(`/profiles/${profileId}/preferences/${action.movieId}/undo`, {
       method: "POST",
       body: JSON.stringify({ action_id: action.actionId }),
-    }, { movie_id: action.movieId, action_id: action.actionId, recommendation_version: action.recommendationVersion }),
+    }, { movie_id: action.movieId, action_id: action.actionId, recommendation_version: action.recommendationVersion }).then(
+      (result) => {
+        invalidateGetCache(`discover:${profileId}`);
+        invalidateGetCache(`recs:${profileId}:`);
+        return result;
+      },
+    ),
   groups: () => request<ApiGroup[]>("/groups", undefined, []).then((items) => items.map(mapGroup)),
   createGroup: (name: string, profileId: number) =>
     request<ApiGroup>("/groups", { method: "POST", body: JSON.stringify({ name, profile_id: profileId }) }).then(mapGroup),
