@@ -1,13 +1,13 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
+from typing import Self, TypeGuard
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _usable_postgres_url(url: str | None) -> bool:
+def _usable_postgres_url(url: str | None) -> TypeGuard[str]:
     if url is None:
         return False
     stripped = url.strip()
@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 120
     auth_rate_limit_per_minute: int = 20
     redis_url: str | None = None
+    recommendation_cache_seconds: int = 90
+    recommendation_cache_entries: int = 256
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""

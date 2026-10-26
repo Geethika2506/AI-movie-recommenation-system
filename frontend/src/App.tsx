@@ -1,8 +1,10 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { keepPreviousData, QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
 import { api, ApiError } from "./api";
 import { movies as demoMovies } from "./data";
+import { queryKeys } from "./queries";
 import type { GroupRecommendationMode, GroupRoom, GroupSession, Movie, MovieAction, PreferenceResult, Profile, SwipeAction, User } from "./types";
 
 const colors = ["#f6b84b", "#77cbb9", "#dd7d91", "#9b8ee8"];
@@ -100,19 +102,19 @@ function profileNeedsQuestions(profile: Profile | undefined): boolean {
   return !!profile && profile.id > 0 && !(profile.seedPreferredGenres?.length);
 }
 
-function useRemote<T>(loader: () => Promise<T>, dependencies: unknown[] = []) {
-  const [data, setData] = useState<T>();
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let current = true;
-    setLoading(true);
-    loader().then((result) => current && setData(result)).catch((reason: Error) => current && setError(reason.message)).finally(() => current && setLoading(false));
-    return () => { current = false; };
-    // The caller explicitly controls refresh dependencies.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, dependencies);
-  return { data, error, loading };
+function useRemote<T>(queryKey: QueryKey, loader: () => Promise<T>, enabled = true) {
+  const query = useQuery({
+    queryKey,
+    queryFn: loader,
+    enabled,
+    placeholderData: keepPreviousData,
+  });
+  return {
+    data: query.data,
+    error: query.error instanceof Error ? query.error.message : "",
+    loading: enabled && query.isPending && query.data === undefined,
+    refreshing: query.isFetching && query.data !== undefined,
+  };
 }
 
 function App() {
@@ -123,9 +125,21 @@ function App() {
   const [activeId, setActiveId] = useState(() => Number(localStorage.getItem("cinematch:activeProfile") ?? 0));
   const [readOnly, setReadOnly] = useState(false);
   const [notice, setNotice] = useState("");
-  const [feedRevision, setFeedRevision] = useState(0);
+  const queryClient = useQueryClient();
+  const settingsState = useRemote(queryKeys.settings, api.settings);
   const activeProfile = profiles.find((profile) => profile.id === activeId) ?? profiles[0];
-  const bumpFeed = () => setFeedRevision((value) => value + 1);
+  const bumpFeed = () => {
+    for (const key of [
+      ["discover"],
+      ["recommendations"],
+      ["wishlist"],
+      ["group-recommendations"],
+      ["room-recommendations"],
+      ["session-recommendations"],
+    ]) {
+      void queryClient.invalidateQueries({ queryKey: key });
+    }
+  };
   useEffect(() => {
     api.restoreSession()
       .then(setUser)
@@ -159,8 +173,8 @@ function App() {
     return () => { current = false; };
   }, [user?.id]);
   useEffect(() => {
-    api.settings().then((value) => setReadOnly(value.readOnly)).catch(() => undefined);
-  }, []);
+    if (settingsState.data) setReadOnly(settingsState.data.readOnly);
+  }, [settingsState.data]);
 
   const persistProfiles = (next: Profile[]) => {
     setProfiles(next);
@@ -176,7 +190,7 @@ function App() {
   };
   const location = useLocation();
   const logout = () => { void api.logout().finally(() => setUser(null)); };
-  const app = { profiles, activeProfile, persistProfiles, selectProfile, readOnly, setReadOnly, flash, feedRevision, bumpFeed };
+  const app = { profiles, activeProfile, persistProfiles, selectProfile, readOnly, setReadOnly, flash, bumpFeed };
 
   if (!authChecked) return <div className="loading-page">Restoring your CineMatch session…</div>;
   if (!user) return <AuthPage onAuthenticated={setUser} />;
@@ -232,7 +246,6 @@ type SharedProps = {
   readOnly: boolean;
   setReadOnly: (value: boolean) => void;
   flash: (message: string) => void;
-  feedRevision: number;
   bumpFeed: () => void;
 };
 
@@ -459,8 +472,8 @@ function Onboarding({ activeProfile, profiles, persistProfiles, readOnly, flash,
   const dragStart = useRef<number | null>(null);
   const navigate = useNavigate();
   const movieState = useRemote(
+    queryKeys.discover(activeProfile?.id ?? 0),
     () => activeProfile ? api.discover(activeProfile.id) : Promise.resolve(demoMovies),
-    [activeProfile?.id],
   );
   const deck = useMemo(() => {
     const source = movieState.data ?? demoMovies;
@@ -571,8 +584,8 @@ function discoveryBalanceCopy(discovery: number): string {
 function Home(props: SharedProps) {
   const [discovery, setDiscovery] = useState(35);
   const { data, error, loading } = useRemote(
+    queryKeys.recommendations(props.activeProfile?.id ?? 0, discovery),
     () => api.recommendations(props.activeProfile ? [props.activeProfile.id] : [], discovery),
-    [props.activeProfile?.id, discovery, props.feedRevision],
   );
   return (
     <Page eyebrow={`Curated for ${props.activeProfile?.name ?? "you"}`} title="Your next favorite is waiting" intro="A considered mix of familiar picks and discoveries, tuned to what you enjoy.">
@@ -586,8 +599,8 @@ function Home(props: SharedProps) {
 
 function WantToWatchPreview(props: SharedProps) {
   const { data, error, loading } = useRemote(
+    queryKeys.wishlist(props.activeProfile?.id ?? 0),
     () => (props.activeProfile ? api.wishlist(props.activeProfile.id) : Promise.resolve([])),
-    [props.activeProfile?.id, props.feedRevision],
   );
   if (loading || error || !data?.length) return null;
   const preview = data.slice(0, 4);
@@ -606,10 +619,18 @@ function Search(props: SharedProps) {
   const year = params.get("year") ?? "Any";
   const language = params.get("language") ?? "All";
   const runtime = params.get("runtime") ?? "Any";
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
   const [page, setPage] = useState(1);
   const [collected, setCollected] = useState<Movie[]>([]);
-  useEffect(() => { setPage(1); setCollected([]); }, [query]);
-  const { data, error, loading } = useRemote(() => api.movies(query, page, 48), [query, page]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  useEffect(() => { setPage(1); setCollected([]); }, [debouncedQuery]);
+  const { data, error, loading } = useRemote(
+    queryKeys.movies(debouncedQuery, page),
+    () => api.movies(debouncedQuery, page, 48),
+  );
   useEffect(() => {
     if (!data) return;
     setCollected((current) => {
@@ -644,8 +665,8 @@ function Search(props: SharedProps) {
 
 function MovieDetail(props: SharedProps) {
   const id = Number(useParams().id);
-  const movieState = useRemote(() => api.movie(id), [id]);
-  const similarState = useRemote(() => api.similar(id), [id]);
+  const movieState = useRemote(queryKeys.movie(id), () => api.movie(id));
+  const similarState = useRemote(queryKeys.similar(id), () => api.similar(id));
   if (movieState.loading) return <Page title="Loading movie…"><Skeleton count={1} /></Page>;
   if (movieState.error || !movieState.data) return <Page title="We couldn't load this movie"><ErrorState message={movieState.error} /></Page>;
   const movie = movieState.data;
@@ -663,41 +684,56 @@ function MovieDetail(props: SharedProps) {
 
 function Group(props: SharedProps) {
   const location = useLocation();
+  const queryClient = useQueryClient();
   const highlightedRoomId = (location.state as { roomId?: number } | null)?.roomId;
-  const [refresh, setRefresh] = useState(0);
-  const groupState = useRemote(api.groups, [refresh]);
+  const groupState = useRemote(queryKeys.groups, api.groups);
   const [selectedId, setSelectedId] = useState<number>();
   const [name, setName] = useState("");
   const [inviteInfo, setInviteInfo] = useState<{ id: number; url: string; roomName: string }>();
   const [strategy, setStrategy] = useState<"balanced" | "everyone_matters">("balanced");
   const [includeWatched, setIncludeWatched] = useState(false);
-  const [sessionRevision, setSessionRevision] = useState(0);
   const groups = groupState.data ?? [];
   const selected = groups.find((group) => group.id === selectedId) ?? groups[0];
+  const groupId = selected?.id ?? 0;
+  const profileId = props.activeProfile?.id ?? 0;
+  const refreshGroupData = () => {
+    for (const key of [
+      queryKeys.groups,
+      ["rooms", groupId],
+      ["sessions", groupId],
+      ["group-recommendations", groupId],
+      ["room-recommendations", groupId],
+      ["session-recommendations"],
+    ]) {
+      void queryClient.invalidateQueries({ queryKey: key });
+    }
+  };
   const roomState = useRemote(
+    queryKeys.rooms(groupId, profileId),
     () => selected && props.activeProfile
       ? api.groupRooms(selected.id, props.activeProfile.id)
       : Promise.resolve([]),
-    [selected?.id, props.activeProfile?.id, refresh, sessionRevision],
   );
   const rooms = roomState.data ?? [];
   const sessionListState = useRemote(
+    queryKeys.sessions(groupId, profileId),
     () => selected && props.activeProfile
       ? api.groupSessions(selected.id, props.activeProfile.id)
       : Promise.resolve([]),
-    [selected?.id, props.activeProfile?.id, sessionRevision],
   );
   const legacySession = sessionListState.data?.find((session) => session.status === "active" && session.roomId == null);
   const sessionMovieState = useRemote(
+    queryKeys.sessionRecommendations(legacySession?.id ?? "", profileId, legacySession?.rankingAlgorithm),
     () => legacySession && props.activeProfile
       ? api.sessionRecommendations(legacySession.id, props.activeProfile.id)
       : Promise.resolve([]),
-    [legacySession?.id, props.activeProfile?.id, sessionRevision],
+    Boolean(legacySession && props.activeProfile),
   );
   const showSharedList = !roomState.loading && rooms.length === 0 && (selected?.members.length ?? 0) >= 2;
   const { data, error, loading } = useRemote(
+    queryKeys.groupRecommendations(groupId, profileId, strategy, includeWatched),
     () => showSharedList && selected && props.activeProfile ? api.groupRecommendations(selected.id, props.activeProfile.id, strategy, includeWatched) : Promise.resolve([]),
-    [showSharedList, selected?.id, props.activeProfile?.id, strategy, includeWatched, selected?.recommendationVersion, props.feedRevision],
+    Boolean(showSharedList && selected && props.activeProfile),
   );
   const create = async (event: FormEvent) => {
     event.preventDefault();
@@ -706,7 +742,7 @@ function Group(props: SharedProps) {
       const group = await api.createGroup(name.trim(), props.activeProfile.id);
       setName("");
       setSelectedId(group.id);
-      setRefresh((value) => value + 1);
+      refreshGroupData();
       props.flash("Group created");
     } catch (reason) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t create group");
@@ -717,7 +753,7 @@ function Group(props: SharedProps) {
     try {
       const result = await api.createInvite(selected.id, props.activeProfile.id);
       setInviteInfo({ id: result.id, url: result.invite_url, roomName: result.room_name });
-      setRefresh((value) => value + 1);
+      refreshGroupData();
       let copied = false;
       try {
         if (navigator.clipboard) {
@@ -748,7 +784,7 @@ function Group(props: SharedProps) {
     if (!selected || !props.activeProfile) return;
     try {
       await api.removeGroupMember(selected.id, memberProfileId, props.activeProfile.id);
-      setRefresh((value) => value + 1);
+      refreshGroupData();
       props.flash(memberProfileId === props.activeProfile.id ? "You left the group" : "Member removed");
     } catch (reason) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t update membership");
@@ -757,14 +793,18 @@ function Group(props: SharedProps) {
   const startRoom = async (room: GroupRoom, mode: GroupRecommendationMode) => {
     if (!props.activeProfile) return;
     try {
-      await api.createGroupSession(
+      const created = await api.createGroupSession(
         room.groupId,
         props.activeProfile.id,
         room.members.map((member) => member.profileId),
         room.id,
         mode,
       );
-      setSessionRevision((value) => value + 1);
+      queryClient.setQueryData<GroupSession[]>(
+        queryKeys.sessions(room.groupId, props.activeProfile.id),
+        (sessions = []) => [created, ...sessions.filter((item) => item.id !== created.id)],
+      );
+      refreshGroupData();
       props.flash(`${groupModeTitle(mode)} movie night started in ${room.name}`);
     } catch (reason) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t start session");
@@ -774,7 +814,7 @@ function Group(props: SharedProps) {
     if (!legacySession || !props.activeProfile) return;
     try {
       await api.groupVote(legacySession.id, props.activeProfile.id, movie.id, action);
-      setSessionRevision((value) => value + 1);
+      refreshGroupData();
       props.flash("Group vote saved");
     } catch (reason) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t save vote");
@@ -789,7 +829,7 @@ function Group(props: SharedProps) {
           {selected && <section className="group-summary card"><div><h2>{selected.name}</h2><p>{selected.members.length} member{selected.members.length === 1 ? "" : "s"}</p></div><button className="button" onClick={invite}>Create room link</button>{inviteInfo && <div className="invite-link"><label><span>Share this link for {inviteInfo.roomName}</span><input readOnly value={inviteInfo.url} onFocus={(event) => event.currentTarget.select()} /></label><button className="button" onClick={revokeInvite}>Revoke invitation</button></div>}<div className="member-list">{selected.members.map((member) => <span key={member.profileId}>{member.name} · {member.needsOnboarding ? "needs more onboarding" : `${member.feedbackCount} preferences`}{((selected.ownerProfileId === props.activeProfile?.id && member.profileId !== selected.ownerProfileId) || (member.profileId === props.activeProfile?.id && member.profileId !== selected.ownerProfileId)) && <button onClick={() => removeMember(member.profileId)}>{member.profileId === props.activeProfile?.id ? "Leave" : "Remove"}</button>}</span>)}</div></section>}
           <label className="strategy-row card"><span><strong>Ranking strategy</strong><small>Balanced emphasizes average enjoyment; Everyone matters emphasizes the least-satisfied member.</small></span><select value={strategy} onChange={(event) => setStrategy(event.target.value as typeof strategy)}><option value="balanced">Balanced</option><option value="everyone_matters">Everyone matters</option></select></label>
           <label className="switch-row card"><span><strong>Include already watched movies</strong><small>Off by default so nobody gets a repeat.</small></span><input type="checkbox" role="switch" checked={includeWatched} onChange={(event) => setIncludeWatched(event.target.checked)} /></label>
-          {roomState.loading ? <Skeleton count={2} /> : roomState.error ? <ErrorState message={roomState.error} /> : rooms.length > 0 ? <div className="room-list">{selected?.ownerProfileId === props.activeProfile?.id && <p className="compromise-note">You own this group, so every room is listed. Friends only see the room for the link they opened.</p>}{rooms.map((room) => <RoomPanel key={room.id} room={room} groupOwnerProfileId={selected?.ownerProfileId} session={(sessionListState.data ?? []).find((session) => session.status === "active" && session.roomId === room.id)} strategy={strategy} includeWatched={includeWatched} sessionRevision={sessionRevision} highlighted={room.id === highlightedRoomId} onStart={startRoom} onChanged={() => { setSessionRevision((value) => value + 1); setRefresh((value) => value + 1); }} {...props} />)}</div> : selected && selected.members.length < 2 ? <Empty title="Waiting for a room" text="Create a room link. Anyone who opens a different person’s link joins a different room." /> : null}
+          {roomState.loading ? <Skeleton count={2} /> : roomState.error ? <ErrorState message={roomState.error} /> : rooms.length > 0 ? <div className="room-list">{selected?.ownerProfileId === props.activeProfile?.id && <p className="compromise-note">You own this group, so every room is listed. Friends only see the room for the link they opened.</p>}{rooms.map((room) => <RoomPanel key={room.id} room={room} groupOwnerProfileId={selected?.ownerProfileId} session={(sessionListState.data ?? []).find((session) => session.status === "active" && session.roomId === room.id)} strategy={strategy} includeWatched={includeWatched} highlighted={room.id === highlightedRoomId} onStart={startRoom} onChanged={refreshGroupData} {...props} />)}</div> : selected && selected.members.length < 2 ? <Empty title="Waiting for a room" text="Create a room link. Anyone who opens a different person’s link joins a different room." /> : null}
           {legacySession && <section className="card group-session-panel"><p className="eyebrow">Live group session</p><h2>Consensus feed</h2><p>Every participant has one vote. A veto removes that movie from this session only.</p>{sessionMovieState.loading ? <Skeleton count={1} /> : sessionMovieState.data?.[0] && <><MovieCard movie={sessionMovieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(sessionMovieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(sessionMovieState.data![0], "like")}>Like</button></div></>}</section>}
           {showSharedList && selected && selected.members.length >= 2 && <><p className="compromise-note">Group scores are estimates. Conflicts are labeled “Best available compromise”; no result promises everyone will like it.</p><AsyncMovies loading={loading} error={error} movies={data} {...props} /></>}
         </>}
@@ -799,20 +839,21 @@ function Group(props: SharedProps) {
 }
 
 function RoomPanel({
-  room, groupOwnerProfileId, session, strategy, includeWatched, sessionRevision, highlighted, onStart, onChanged, ...props
+  room, groupOwnerProfileId, session, strategy, includeWatched, highlighted, onStart, onChanged, ...props
 }: {
   room: GroupRoom;
   groupOwnerProfileId?: number;
   session?: GroupSession;
   strategy: "balanced" | "everyone_matters";
   includeWatched: boolean;
-  sessionRevision: number;
   highlighted: boolean;
   onStart: (room: GroupRoom, mode: GroupRecommendationMode) => void;
   onChanged: () => void;
 } & SharedProps) {
+  const queryClient = useQueryClient();
   const [recommendationMode, setRecommendationMode] =
     useState<GroupRecommendationMode>(session?.rankingAlgorithm ?? "fair_consensus");
+  const [editingMode, setEditingMode] = useState(false);
   const [updatingMode, setUpdatingMode] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [removed, setRemoved] = useState(false);
@@ -828,16 +869,28 @@ function RoomPanel({
     !!props.activeProfile &&
     session.participantProfileIds.includes(props.activeProfile.id);
   const movieState = useRemote(
+    queryKeys.sessionRecommendations(
+      session?.id ?? "",
+      props.activeProfile?.id ?? 0,
+      session?.rankingAlgorithm,
+    ),
     () => participating && props.activeProfile
       ? api.sessionRecommendations(session.id, props.activeProfile.id)
       : Promise.resolve([]),
-    [participating, session?.id, session?.rankingAlgorithm, props.activeProfile?.id, sessionRevision, removed, deleting],
+    Boolean(participating && props.activeProfile),
   );
   const ranked = useRemote(
+    queryKeys.roomRecommendations(
+      room.groupId,
+      room.id,
+      props.activeProfile?.id ?? 0,
+      strategy,
+      includeWatched,
+    ),
     () => !removed && !deleting && room.members.length >= 2 && props.activeProfile
       ? api.roomRecommendations(room.groupId, room.id, props.activeProfile.id, strategy, includeWatched)
       : Promise.resolve([]),
-    [removed, deleting, room.groupId, room.id, room.members.length, props.activeProfile?.id, strategy, includeWatched, props.feedRevision],
+    Boolean(!removed && !deleting && room.members.length >= 2 && props.activeProfile),
   );
   useEffect(() => {
     if (session?.rankingAlgorithm) setRecommendationMode(session.rankingAlgorithm);
@@ -858,8 +911,14 @@ function RoomPanel({
     }
     setUpdatingMode(true);
     try {
-      await api.updateGroupSessionRanking(activeSession.id, props.activeProfile.id, recommendationMode);
+      const updated = await api.updateGroupSessionRanking(activeSession.id, props.activeProfile.id, recommendationMode);
+      queryClient.setQueriesData<GroupSession[]>(
+        { queryKey: ["sessions", room.groupId] },
+        (sessions) => sessions?.map((item) => item.id === updated.id ? updated : item),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["session-recommendations", activeSession.id] });
       onChanged();
+      setEditingMode(false);
       props.flash(`Recommendation mode updated to ${groupModeTitle(recommendationMode)}`);
     } catch (reason) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t update recommendation mode");
@@ -931,10 +990,10 @@ function RoomPanel({
       <p className="eyebrow">Room</p>
       <h2>{room.name}</h2>
       <p>Hosted by {room.hostName}. Only people who opened this link are in this room.</p>
-      {isHost && <div className="room-actions"><button className="button" type="button" onClick={copyRoomLink}>Copy room link</button>{canDeleteRoom && <button className="button danger-button" type="button" onClick={deleteRoom} disabled={deleting}>{deleting ? "Deleting…" : "Delete room"}</button>}</div>}
+      {isHost && <div className="room-actions"><button className="button" type="button" onClick={copyRoomLink}>Copy room link</button>{activeSession && <button className="button" type="button" onClick={() => setEditingMode((value) => !value)}>{editingMode ? "Cancel mode edit" : "Edit recommendation mode"}</button>}{canDeleteRoom && <button className="button danger-button" type="button" onClick={deleteRoom} disabled={deleting}>{deleting ? "Deleting…" : "Delete room"}</button>}</div>}
       {!isHost && canDeleteRoom && <div className="room-actions"><button className="button danger-button" type="button" onClick={deleteRoom} disabled={deleting}>{deleting ? "Deleting…" : "Delete room"}</button></div>}
       <div className="member-list">{room.members.map((member) => <span key={member.profileId}>{member.name}{member.host ? " · host" : ""}{(isHost && !member.host) || (member.profileId === props.activeProfile?.id && !member.host) ? <button type="button" onClick={() => removeMember(member.profileId)}>{member.profileId === props.activeProfile?.id ? "Leave" : "Remove"}</button> : null}</span>)}</div>
-      {isHost && <RecommendationModePicker
+      {isHost && (!activeSession || editingMode) && <RecommendationModePicker
         roomId={room.id}
         value={recommendationMode}
         onChange={setRecommendationMode}
@@ -980,8 +1039,8 @@ function JoinInvite(props: SharedProps) {
 function WishlistView(props: SharedProps) {
   const { activeProfile, readOnly, flash, bumpFeed } = props;
   const { data, error, loading } = useRemote(
+    queryKeys.wishlist(activeProfile?.id ?? 0),
     () => (activeProfile ? api.wishlist(activeProfile.id) : Promise.resolve([])),
-    [activeProfile?.id, props.feedRevision],
   );
   const remove = async (movie: Movie) => {
     if (!activeProfile || readOnly) return;
@@ -1027,7 +1086,7 @@ function WishlistView(props: SharedProps) {
 }
 
 function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setReadOnly: (value: boolean) => void; user: User; setUser: (user: User) => void; logout: () => void; bumpFeed: () => void }) {
-  const { data, error } = useRemote(api.settings);
+  const { data, error } = useRemote(queryKeys.settings, api.settings);
   const [username, setUsername] = useState(user.username);
   const [email, setEmail] = useState(user.email);
   const [newPassword, setNewPassword] = useState("");

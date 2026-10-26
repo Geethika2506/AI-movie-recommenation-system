@@ -4,6 +4,7 @@ import { cleanup } from "@testing-library/react";
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Backend unavailable")));
 });
 

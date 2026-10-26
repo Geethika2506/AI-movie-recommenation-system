@@ -8,9 +8,13 @@ test("profile feedback changes recommendations", async ({ page }, testInfo) => {
   await page.getByLabel("Profile name").fill(`Avery ${unique}`);
   await page.getByLabel("Email").fill(`avery-${unique}@example.com`);
   await page.getByLabel("Password").fill("correct-horse-battery");
-  await page.getByRole("button", { name: "Register" }).click();
+  await page.getByRole("button", { name: "Register", exact: true }).click();
 
   await page.getByRole("link", { name: "Discover" }).click();
+  if (await page.getByRole("heading", { name: /What does .* like\?/ }).isVisible()) {
+    await page.getByRole("button", { name: "Drama", exact: true }).first().click();
+    await page.getByRole("button", { name: "Continue to Discover" }).click();
+  }
   await expect(page.getByRole("heading", { name: "What do you enjoy?" })).toBeVisible();
   await page.getByRole("button", { name: "Like →" }).click();
   await expect(page.getByText("1 choices saved")).toBeVisible();

@@ -5,12 +5,12 @@ import secrets
 import time
 import uuid
 from collections import defaultdict, deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Thread
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import (
     BackgroundTasks,
@@ -25,6 +25,8 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import func, select, text
@@ -46,6 +48,7 @@ from backend.auth import (
     new_refresh_token,
     verify_password,
 )
+from backend.cache import RecommendationCache
 from backend.catalog import import_prepared_catalog
 from backend.config import Settings, get_settings
 from backend.db import Base, make_engine, make_session_factory, session_dependency
@@ -191,11 +194,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             fastapi_app.state.bandit_policy.close()
         if fastapi_app.state.redis:
             await fastapi_app.state.redis.aclose()
+        fastapi_app.state.recommendation_cache.close()
         engine.dispose()
 
     app = FastAPI(title="CineMatch API", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.session_factory = factory
+    app.state.recommendation_cache = RecommendationCache(
+        ttl_seconds=settings.recommendation_cache_seconds,
+        max_entries=settings.recommendation_cache_entries,
+        redis_url=settings.redis_url,
+    )
+    frontend_dist = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    app.state.frontend_dist = frontend_dist
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list(),
@@ -205,6 +216,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     _register_middleware(app, settings)
     _register_routes(app, factory, settings)
+    if frontend_dist.is_dir():
+        app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="assets")
     return app
 
 
@@ -282,8 +295,11 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
 
     DB = Annotated[Session, Depends(get_session)]
 
-    @app.get("/")
-    def root() -> dict[str, str]:
+    @app.get("/", response_model=None)
+    def root(request: Request) -> FileResponse | dict[str, str]:
+        index = request.app.state.frontend_dist / "index.html"
+        if index.is_file():
+            return FileResponse(index)
         return {
             "service": "cinematch-api",
             "health": "/health",
@@ -872,12 +888,18 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         discovery: int = Query(default=35, ge=0, le=100),
     ) -> list[RecommendationOut]:
         profile = _owned_profile_or_404(db, profile_id, request)
-        pool = embedding_hybrid_recommendations(
+        pool_size = max(120, limit)
+        pool = _cached_recommendation_rows(
             db,
-            profile_id,
-            max(120, limit),
-            exploration=discovery / 100,
-            collaborative_artifact_dir=settings.artifact_dir / "implicit-als-v1",
+            request.app.state.recommendation_cache,
+            f"personal:{profile.id}:{profile.recommendation_version}:{pool_size}:{discovery}",
+            lambda: embedding_hybrid_recommendations(
+                db,
+                profile_id,
+                pool_size,
+                exploration=discovery / 100,
+                collaborative_artifact_dir=settings.artifact_dir / "implicit-als-v1",
+            ),
         )
         return _log_personal_recommendations(
             db,
@@ -909,14 +931,23 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
             raise HTTPException(
                 status_code=409, detail="create a profile before requesting recommendations"
             )
-        pool = embedding_hybrid_recommendations(
+        pool_size = max(120, limit)
+        pool = _cached_recommendation_rows(
             db,
-            profile.id,
-            max(120, limit),
-            include_watched=include_watched,
-            diversity=diversity,
-            exploration=exploration,
-            collaborative_artifact_dir=settings.artifact_dir / "implicit-als-v1",
+            request.app.state.recommendation_cache,
+            (
+                f"personal:{profile.id}:{profile.recommendation_version}:{pool_size}:"
+                f"{include_watched}:{diversity:.3f}:{exploration:.3f}"
+            ),
+            lambda: embedding_hybrid_recommendations(
+                db,
+                profile.id,
+                pool_size,
+                include_watched=include_watched,
+                diversity=diversity,
+                exploration=exploration,
+                collaborative_artifact_dir=settings.artifact_dir / "implicit-als-v1",
+            ),
         )
         return _log_personal_recommendations(
             db,
@@ -935,8 +966,14 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         db: DB,
         limit: int = Query(default=60, ge=1, le=100),
     ) -> list[RecommendationOut]:
-        _owned_profile_or_404(db, profile_id, request)
-        return _recommendations_out(db, discovery_for_profile(db, profile_id, limit), settings)
+        profile = _owned_profile_or_404(db, profile_id, request)
+        rows = _cached_recommendation_rows(
+            db,
+            request.app.state.recommendation_cache,
+            f"discover:{profile.id}:{profile.recommendation_version}:{limit}",
+            lambda: discovery_for_profile(db, profile_id, limit),
+        )
+        return _recommendations_out(db, rows, settings)
 
     @app.get("/api/profiles/{profile_id}/wishlist", response_model=list[MovieOut])
     def profile_wishlist(profile_id: int, request: Request, db: DB) -> list[Movie]:
@@ -1248,7 +1285,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         db: DB,
     ) -> list[RecommendationOut]:
         requester = _owned_profile_or_404(db, payload.requester_profile_id, request)
-        _group_member_or_404(db, group_id, requester.id)
+        group = _group_member_or_404(db, group_id, requester.id)
         profile_ids = list(
             db.scalars(select(GroupMember.profile_id).where(GroupMember.group_id == group_id))
         )
@@ -1259,9 +1296,16 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
             if payload.strategy == "balanced"
             else 0.25
         )
-        return _recommendations_out(
+        cache_key = (
+            f"group:{group.id}:{group.recommendation_version}:{sorted(profile_ids)}:"
+            f"{payload.limit}:{mean_weight}:{payload.include_watched}:"
+            f"{payload.genres}:{payload.language}:{payload.max_runtime}"
+        )
+        rows = _cached_recommendation_rows(
             db,
-            group_recommendations(
+            request.app.state.recommendation_cache,
+            cache_key,
+            lambda: group_recommendations(
                 db,
                 profile_ids,
                 payload.limit,
@@ -1271,8 +1315,8 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
                 language=payload.language,
                 max_runtime=payload.max_runtime,
             ),
-            settings,
         )
+        return _recommendations_out(db, rows, settings)
 
     @app.get("/api/groups/{group_id}/rooms", response_model=list[GroupRoomOut])
     def list_group_rooms(
@@ -1395,9 +1439,16 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
             if payload.strategy == "balanced"
             else 0.25
         )
-        return _recommendations_out(
+        cache_key = (
+            f"room:{group.id}:{group.recommendation_version}:{room.id}:"
+            f"{sorted(profile_ids)}:{payload.limit}:{mean_weight}:{payload.include_watched}:"
+            f"{payload.genres}:{payload.language}:{payload.max_runtime}"
+        )
+        rows = _cached_recommendation_rows(
             db,
-            group_recommendations(
+            request.app.state.recommendation_cache,
+            cache_key,
+            lambda: group_recommendations(
                 db,
                 profile_ids,
                 payload.limit,
@@ -1407,8 +1458,8 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
                 language=payload.language,
                 max_runtime=payload.max_runtime,
             ),
-            settings,
         )
+        return _recommendations_out(db, rows, settings)
 
     @app.post(
         "/api/groups/{group_id}/sessions",
@@ -1590,10 +1641,25 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
     ) -> list[RecommendationOut]:
         profile = _owned_profile_or_404(db, profile_id, request)
         group_session = _active_session_for_participant(db, session_id, profile.id)
-        ranked = rank_group_session(db, group_session, limit=max(200, limit))
+        vote_fingerprint = sorted(
+            (vote.profile_id, vote.movie_id, vote.action)
+            for vote in db.scalars(select(GroupVote).where(GroupVote.session_id == session_id))
+        )
+        ranked_rows = _cached_recommendation_rows(
+            db,
+            request.app.state.recommendation_cache,
+            (
+                f"session:{session_id}:{group_session.ranking_algorithm}:"
+                f"{group_session.participant_set_version}:{vote_fingerprint}:{max(80, limit)}"
+            ),
+            lambda: [
+                (row.movie, row.score, row.reason)
+                for row in rank_group_session(db, group_session, limit=max(80, limit))
+            ],
+        )
         request_id = str(uuid.uuid4())
         impression_id = str(uuid.uuid4())
-        displayed = ranked[:limit]
+        displayed = ranked_rows[:limit]
         db.add(
             RecommendationImpression(
                 request_id=request_id,
@@ -1601,8 +1667,8 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
                 user_id=_authenticated_user_id(request),
                 session_id=session_id,
                 context="group_session",
-                candidate_movie_ids=[row.movie.id for row in ranked],
-                displayed_movie_ids=[row.movie.id for row in displayed],
+                candidate_movie_ids=[movie.id for movie, _score, _reason in ranked_rows],
+                displayed_movie_ids=[movie.id for movie, _score, _reason in displayed],
                 displayed_positions=list(range(len(displayed))),
                 model_version=f"group-{group_session.ranking_algorithm}-v1",
                 feature_version="group-member-scores-v1",
@@ -1614,7 +1680,7 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         db.commit()
         return _recommendations_out(
             db,
-            [(row.movie, row.score, row.reason) for row in displayed],
+            displayed,
             settings,
             request_id=request_id,
             impression_id=impression_id,
@@ -1809,30 +1875,31 @@ def _required_user(db: Session, request: Request) -> User:
     return user
 
 
-def _refresh_cookie_options(settings: Settings) -> dict[str, object]:
-    # Production serves the SPA and API on different origins; Lax blocks the cookie on fetch().
-    return {
-        "path": "/api/auth",
-        "httponly": True,
-        "secure": settings.secure_cookies,
-        "samesite": "none" if settings.secure_cookies else "lax",
-    }
-
-
 def _clear_refresh_cookie(response: Response, settings: Settings) -> None:
-    response.delete_cookie("cinematch_refresh", **_refresh_cookie_options(settings))
+    same_site: Literal["lax", "none"] = "none" if settings.secure_cookies else "lax"
+    response.delete_cookie(
+        "cinematch_refresh",
+        path="/api/auth",
+        httponly=True,
+        secure=settings.secure_cookies,
+        samesite=same_site,
+    )
 
 
 def _issue_refresh_token(db: Session, response: Response, user_id: int, settings: Settings) -> None:
     raw, token_hash = new_refresh_token()
     expires_at = datetime.now(UTC) + timedelta(days=settings.refresh_token_days)
+    same_site: Literal["lax", "none"] = "none" if settings.secure_cookies else "lax"
     db.add(RefreshToken(user_id=user_id, token_hash=token_hash, expires_at=expires_at))
     response.set_cookie(
         "cinematch_refresh",
         raw,
         max_age=settings.refresh_token_days * 86_400,
         expires=expires_at,
-        **_refresh_cookie_options(settings),
+        path="/api/auth",
+        httponly=True,
+        secure=settings.secure_cookies,
+        samesite=same_site,
     )
 
 
@@ -2188,6 +2255,29 @@ def _attach_posters(db: Session, movies: list[Movie], settings: Settings) -> Non
         enabled=settings.poster_lookup,
         live_fetch=settings.poster_live_fetch,
     )
+
+
+def _cached_recommendation_rows(
+    db: Session,
+    cache: RecommendationCache,
+    key: str,
+    loader: Callable[[], list[tuple[Movie, float, str]]],
+) -> list[tuple[Movie, float, str]]:
+    cached = cache.get(key)
+    if cached is None:
+        rows = loader()
+        cache.set(key, [(movie.id, score, reason) for movie, score, reason in rows])
+        return rows
+    movie_ids = [movie_id for movie_id, _score, _reason in cached]
+    movie_map = {
+        movie.id: movie
+        for movie in db.scalars(select(Movie).where(Movie.id.in_(movie_ids)))
+    }
+    return [
+        (movie_map[movie_id], score, reason)
+        for movie_id, score, reason in cached
+        if movie_id in movie_map
+    ]
 
 
 def _recommendations_out(

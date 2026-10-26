@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +7,14 @@ import App from "./App";
 import type { Profile } from "./types";
 
 function renderApp(path = "/") {
-  return render(<MemoryRouter initialEntries={[path]}><App /></MemoryRouter>);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 90_000 } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[path]}><App /></MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 const profile: Profile = {
@@ -76,6 +84,31 @@ beforeEach(() => {
 });
 
 describe("CineMatch", () => {
+  it("restores a valid stored access token without rotating the refresh cookie", async () => {
+    sessionStorage.setItem("cinematch:accessToken", "still-valid");
+    let refreshCalls = 0;
+    vi.mocked(fetch).mockImplementation((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/auth/refresh")) {
+        refreshCalls += 1;
+        return json(auth);
+      }
+      if (url.includes("/users/me")) return json(auth.user);
+      if (url.endsWith("/profiles")) return json([apiProfile]);
+      if (url.includes("/settings")) return json({
+        active_model: "hybrid-v1", dataset: "test", movie_count: 10, rating_count: 0,
+        last_trained: null, read_only: false, tmdb_available: false,
+      });
+      if (url.includes("/recommendations")) return json([]);
+      if (url.includes("/wishlist")) return json([]);
+      return json({ detail: "test fallback" }, 500);
+    });
+
+    renderApp();
+    expect(await screen.findByText("Your next favorite is waiting")).toBeInTheDocument();
+    expect(refreshCalls).toBe(0);
+  });
+
   it("replaces stale cached profile ids with server profiles after login", async () => {
     localStorage.setItem(
       "cinematch:profiles",
@@ -158,12 +191,15 @@ describe("CineMatch", () => {
     const search = await screen.findByLabelText("Search by title");
     await user.type(search, "Arrival");
     expect(await screen.findByRole("heading", { name: "Arrival" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Parasite" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Parasite" })).not.toBeInTheDocument(),
+    );
   });
 
   it("offers logout, recommendation reset, and account edits in settings", async () => {
     localStorage.setItem("cinematch:profiles", JSON.stringify([profile]));
     renderApp("/settings");
+    await waitFor(() => expect(document.body.textContent).not.toContain("Restoring your CineMatch session"));
     expect(await screen.findByRole("heading", { name: "Account" })).toBeInTheDocument();
     expect(screen.getByLabelText("Username")).toHaveValue("maya");
     expect(screen.getByLabelText("Email")).toHaveValue("maya@example.com");
@@ -199,6 +235,8 @@ describe("CineMatch", () => {
   it("lets the room host choose the group recommendation mode", async () => {
     localStorage.setItem("cinematch:profiles", JSON.stringify([profile]));
     let sessionPayload: Record<string, unknown> | undefined;
+    let activeMode: string | undefined;
+    let updatedMode: string | undefined;
     vi.mocked(fetch).mockImplementation((input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/auth/refresh")) return json(auth);
@@ -231,6 +269,7 @@ describe("CineMatch", () => {
       }]);
       if (url.includes("/groups/1/sessions") && init?.method === "POST") {
         sessionPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        activeMode = String(sessionPayload.ranking_algorithm);
         return json({
           id: "session-1",
           group_id: 1,
@@ -239,11 +278,31 @@ describe("CineMatch", () => {
           participant_profile_ids: [1, 2],
           participant_set_version: 1,
           selected_movie_id: null,
-          ranking_algorithm: sessionPayload.ranking_algorithm,
+          ranking_algorithm: activeMode,
           consensus_policy: "majority",
         }, 201);
       }
-      if (url.includes("/groups/1/sessions?")) return json([]);
+      if (url.includes("/groups/1/sessions?")) return json(activeMode ? [{
+        id: "session-1",
+        group_id: 1,
+        room_id: 10,
+        status: "active",
+        participant_profile_ids: [1, 2],
+        participant_set_version: 1,
+        selected_movie_id: null,
+        ranking_algorithm: activeMode,
+        consensus_policy: "majority",
+      }] : []);
+      if (url.includes("/sessions/session-1") && init?.method === "PATCH") {
+        updatedMode = String((JSON.parse(String(init.body)) as Record<string, unknown>).ranking_algorithm);
+        activeMode = updatedMode;
+        return json({
+          id: "session-1", group_id: 1, room_id: 10, status: "active",
+          participant_profile_ids: [1, 2], participant_set_version: 1,
+          selected_movie_id: null, ranking_algorithm: activeMode, consensus_policy: "majority",
+        });
+      }
+      if (url.includes("/sessions/session-1/recommendations")) return json([]);
       if (url.includes("/groups/1/rooms/10/recommendations")) {
         return json([{ movie: sampleMovie, score: 0.8, reason: "test", model_version: "group-v1" }]);
       }
@@ -255,5 +314,9 @@ describe("CineMatch", () => {
     await user.click(await screen.findByText("All On Board"));
     await user.click(screen.getByRole("button", { name: "Start with All On Board" }));
     await waitFor(() => expect(sessionPayload?.ranking_algorithm).toBe("nash"));
+    await user.click(await screen.findByRole("button", { name: "Edit recommendation mode" }));
+    await user.click(screen.getByText("No Regrets"));
+    await user.click(screen.getByRole("button", { name: "Apply No Regrets" }));
+    await waitFor(() => expect(updatedMode).toBe("least_misery"));
   });
 });

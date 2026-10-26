@@ -6,7 +6,14 @@ import App from "./App";
 import "./styles.css";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
+  defaultOptions: {
+    queries: {
+      staleTime: 90_000,
+      gcTime: 15 * 60_000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
 });
 
 createRoot(document.getElementById("root")!).render(

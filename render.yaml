@@ -1,4 +1,4 @@
-# Render Blueprint — CineMatch (API + static frontend + Postgres)
+# Render Blueprint — CineMatch (same-origin web app + Postgres)
 # Sync: Dashboard → Blueprints → New Blueprint Instance → this repo (main).
 
 databases:
@@ -17,7 +17,7 @@ services:
     plan: free
     region: frankfurt
     branch: main
-    autoDeploy: true
+    autoDeployTrigger: commit
     dockerfilePath: ./Dockerfile.backend
     dockerContext: .
     healthCheckPath: /health
@@ -35,9 +35,9 @@ services:
       - key: CINEMATCH_ARTIFACT_DIR
         value: /app/artifacts
       - key: CINEMATCH_CORS_ORIGINS
-        value: https://cinematch-frontend-nif7.onrender.com
+        value: https://ai-movie-recommenation-system.onrender.com
       - key: CINEMATCH_PUBLIC_APP_URL
-        value: https://cinematch-frontend-nif7.onrender.com
+        value: https://ai-movie-recommenation-system.onrender.com
       - key: CINEMATCH_SECURE_COOKIES
         value: "true"
       - key: CINEMATCH_LOG_LEVEL
@@ -46,22 +46,3 @@ services:
         generateValue: true
       - key: CINEMATCH_TMDB_TOKEN
         sync: false
-
-  - type: web
-    name: cinematch-frontend
-    runtime: static
-    plan: free
-    region: frankfurt
-    branch: main
-    autoDeploy: true
-    buildCommand: npm ci --prefix frontend && npm run build --prefix frontend
-    staticPublishPath: frontend/dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: VITE_API_URL
-        value: https://ai-movie-recommenation-system.onrender.com/api
-      - key: VITE_DEMO_FALLBACK
-        value: "true"
