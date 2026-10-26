@@ -18,6 +18,7 @@ from backend.models import (
     UserProfileVector,
 )
 from backend.recommendations import (
+    discovery_shuffle_seed,
     match_count_for_discovery,
     mix_discovery_slots,
     recommend_for_profile,
@@ -311,7 +312,7 @@ def _mix_similar_and_random(
         ]
         outside = [movie_id for movie_id in eligible_ids if movie_id not in reserved]
         random_ids = distant if distant else outside
-    random.Random(profile_id).shuffle(random_ids)
+    random.Random(discovery_shuffle_seed(profile_id, exploration)).shuffle(random_ids)
     known = {item[0].id: item[0] for item in scored}
     window = random_ids[: max(limit * 3, limit)]
     missing = [movie_id for movie_id in window if movie_id not in known]

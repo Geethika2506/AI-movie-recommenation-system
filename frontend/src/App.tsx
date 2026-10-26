@@ -102,12 +102,17 @@ function profileNeedsQuestions(profile: Profile | undefined): boolean {
   return !!profile && profile.id > 0 && !(profile.seedPreferredGenres?.length);
 }
 
-function useRemote<T>(queryKey: QueryKey, loader: () => Promise<T>, enabled = true) {
+function useRemote<T>(
+  queryKey: QueryKey,
+  loader: () => Promise<T>,
+  enabled = true,
+  keepPrevious = true,
+) {
   const query = useQuery({
     queryKey,
     queryFn: loader,
     enabled,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPrevious ? keepPreviousData : undefined,
   });
   return {
     data: query.data,
@@ -583,15 +588,42 @@ function discoveryBalanceCopy(discovery: number): string {
 
 function Home(props: SharedProps) {
   const [discovery, setDiscovery] = useState(35);
-  const { data, error, loading } = useRemote(
-    queryKeys.recommendations(props.activeProfile?.id ?? 0, discovery),
-    () => api.recommendations(props.activeProfile ? [props.activeProfile.id] : [], discovery),
+  const [debouncedDiscovery, setDebouncedDiscovery] = useState(35);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedDiscovery(discovery), 250);
+    return () => window.clearTimeout(timer);
+  }, [discovery]);
+  const { data, error, loading, refreshing } = useRemote(
+    queryKeys.recommendations(props.activeProfile?.id ?? 0, debouncedDiscovery),
+    () => api.recommendations(
+      props.activeProfile ? [props.activeProfile.id] : [],
+      debouncedDiscovery,
+    ),
   );
   return (
     <Page eyebrow={`Curated for ${props.activeProfile?.name ?? "you"}`} title="Your next favorite is waiting" intro="A considered mix of familiar picks and discoveries, tuned to what you enjoy.">
-      <section className="discovery card" aria-labelledby="discovery-title"><div><h2 id="discovery-title">Discovery balance</h2><p>{discoveryBalanceCopy(discovery)}</p></div><div className="range-wrap"><span>Familiar</span><input aria-label="Discovery balance" aria-valuetext={discoveryBalanceCopy(discovery)} type="range" min="0" max="100" value={discovery} onChange={(event) => setDiscovery(Number(event.target.value))} /><span>Discovery</span></div></section>
+      <section className="discovery card" aria-labelledby="discovery-title">
+        <div>
+          <h2 id="discovery-title">Discovery balance</h2>
+          <p>{discoveryBalanceCopy(discovery)}</p>
+        </div>
+        <div className="range-wrap">
+          <span>Familiar</span>
+          <input
+            aria-label="Discovery balance"
+            aria-valuetext={discoveryBalanceCopy(discovery)}
+            type="range"
+            min="0"
+            max="100"
+            value={discovery}
+            onChange={(event) => setDiscovery(Number(event.target.value))}
+          />
+          <span>Discovery</span>
+        </div>
+        {refreshing && <p className="discovery-status" role="status">Updating your mix…</p>}
+      </section>
       <SectionTitle title="Top picks for you" action={<Link to="/search">Browse all →</Link>} />
-      <AsyncMovies loading={loading} error={error} movies={data} {...props} />
+      <AsyncMovies loading={loading} refreshing={refreshing} error={error} movies={data} {...props} />
       <WantToWatchPreview {...props} />
     </Page>
   );
@@ -1201,11 +1233,21 @@ function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setRea
   );
 }
 
-function AsyncMovies({ loading, error, movies, ...props }: { loading: boolean; error: string; movies?: Movie[] } & SharedProps) {
+function AsyncMovies({
+  loading,
+  refreshing = false,
+  error,
+  movies,
+  ...props
+}: { loading: boolean; refreshing?: boolean; error: string; movies?: Movie[] } & SharedProps) {
   if (loading) return <Skeleton count={12} />;
   if (error) return <ErrorState message={error} />;
   if (!movies?.length) return <Empty title="Nothing here yet" text="Adjust your search or filters and try again." />;
-  return <div className="movie-grid">{movies.map((movie) => <MovieCard key={movie.id} movie={movie} {...props} />)}</div>;
+  return (
+    <div className={`movie-grid${refreshing ? " is-refreshing" : ""}`} aria-busy={refreshing}>
+      {movies.map((movie) => <MovieCard key={movie.id} movie={movie} {...props} />)}
+    </div>
+  );
 }
 
 function MovieCard({ movie, ...props }: { movie: Movie } & SharedProps) {

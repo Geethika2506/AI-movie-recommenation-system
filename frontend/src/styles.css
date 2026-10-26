@@ -137,6 +137,8 @@ select, input { color: #f7f4eb; background: var(--surface-2); border: 1px solid 
 .discovery h2 { margin: 0; font-size: 1rem; }
 .discovery p { color: var(--muted); margin: .25rem 0 0; font-size: .84rem; }
 .range-wrap { min-width: 320px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .75rem; font-size: .72rem; color: var(--muted); }
+.discovery-status { margin: .75rem 0 0; font-size: .78rem; color: var(--accent); }
+.movie-grid.is-refreshing { opacity: .55; pointer-events: none; transition: opacity .2s ease; }
 input[type="range"] { accent-color: var(--accent); padding: 0; }
 .section-title { margin: 2rem 0 1rem; display: flex; align-items: baseline; justify-content: space-between; }
 .section-title h2 { font: 700 1.65rem "Playfair Display"; margin: 0; }

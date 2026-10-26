@@ -322,6 +322,13 @@ def test_invite_lifecycle_membership_privacy_and_cache_versions(tmp_path: Path) 
             assert session.scalar(select(PreferenceEvent).where(PreferenceEvent.profile_id == bob))
 
 
+def test_discovery_shuffle_seed_changes_with_mix() -> None:
+    from backend.recommendations import discovery_shuffle_seed
+
+    assert discovery_shuffle_seed(3, 0) != discovery_shuffle_seed(3, 0.5)
+    assert discovery_shuffle_seed(3, 0.5) == discovery_shuffle_seed(3, 0.5)
+
+
 def test_discovery_mix_counts() -> None:
     assert match_count_for_discovery(10, 0) == 10
     assert match_count_for_discovery(10, 0.5) == 5

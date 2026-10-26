@@ -888,16 +888,16 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
         discovery: int = Query(default=35, ge=0, le=100),
     ) -> list[RecommendationOut]:
         profile = _owned_profile_or_404(db, profile_id, request)
-        pool_size = max(120, limit)
+        exploration = discovery / 100
         pool = _cached_recommendation_rows(
             db,
             request.app.state.recommendation_cache,
-            f"personal:{profile.id}:{profile.recommendation_version}:{pool_size}:{discovery}",
+            f"personal:{profile.id}:{profile.recommendation_version}:{limit}:{discovery}",
             lambda: embedding_hybrid_recommendations(
                 db,
                 profile_id,
-                pool_size,
-                exploration=discovery / 100,
+                limit,
+                exploration=exploration,
                 collaborative_artifact_dir=settings.artifact_dir / "implicit-als-v1",
             ),
         )

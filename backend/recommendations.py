@@ -11,6 +11,12 @@ from backend.models import Interaction, InteractionKind, Movie, Profile, Rating,
 T = TypeVar("T")
 
 
+def discovery_shuffle_seed(profile_id: int, discovery: float) -> int:
+    """Stable per profile + discovery mix so the slider changes random picks."""
+    ratio = min(1.0, max(0.0, discovery))
+    return profile_id * 10_000 + round(ratio * 100)
+
+
 def match_count_for_discovery(limit: int, discovery: float) -> int:
     """How many of `limit` slots should match the user's taste.
 
@@ -276,7 +282,7 @@ def _mix_taste_and_random(
         random_source = [item for item in neutral if item[0].id not in held]
         if not random_source:
             random_source = [item for item in matches if item[0].id not in held]
-    random.Random(profile_id).shuffle(random_source)
+    random.Random(discovery_shuffle_seed(profile_id, discovery)).shuffle(random_source)
     mixed = mix_discovery_slots(
         matches,
         random_source,
