@@ -26,6 +26,24 @@ def _psycopg_sqlalchemy_url(url: str) -> str:
     return url
 
 
+def _normalize_postgres_url(url: str) -> str:
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    cleaned = url.strip().strip('"').strip("'")
+    cleaned = _psycopg_sqlalchemy_url(cleaned)
+    parsed = urlparse(cleaned)
+    if not parsed.scheme:
+        return cleaned
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() != "channel_binding"
+    ]
+    if not any(key == "sslmode" for key, _ in query):
+        query.append(("sslmode", "require"))
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CINEMATCH_",
@@ -89,9 +107,13 @@ class Settings(BaseSettings):
         pooled = self.neon_pooled_database_url
         direct = self.neon_direct_database_url
         if _usable_postgres_url(pooled) and (not explicit or explicit.startswith("sqlite")):
-            self.database_url = _psycopg_sqlalchemy_url(pooled.strip())
-        if direct:
-            self.database_migration_url = _psycopg_sqlalchemy_url(direct)
+            self.database_url = _normalize_postgres_url(pooled)
+        elif _usable_postgres_url(explicit):
+            self.database_url = _normalize_postgres_url(explicit)
+        if _usable_postgres_url(direct):
+            self.database_migration_url = _normalize_postgres_url(direct)
+        elif self.database_migration_url and _usable_postgres_url(self.database_migration_url):
+            self.database_migration_url = _normalize_postgres_url(self.database_migration_url)
         elif self.database_migration_url is None:
             self.database_migration_url = self.database_url
         return self
