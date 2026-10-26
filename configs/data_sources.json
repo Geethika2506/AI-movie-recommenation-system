@@ -1,0 +1,87 @@
+{
+  "manifest_version": "1.0.0",
+  "sources": {
+    "application_interactions": {
+      "source": "CineMatch users",
+      "terms_url": "docs/data-rights.md#application-interactions",
+      "reviewed_at": "2026-10-26",
+      "license": "User-provided data governed by product privacy policy and consent",
+      "allowed_contexts": ["development", "research", "commercial"],
+      "attribution": [],
+      "fields": {
+        "action": {"use": "ml_eligible", "notes": "Consent-backed action after correction/undo filtering"},
+        "context": {"use": "ml_eligible", "notes": "Personal or group-session context; never merge implicitly"},
+        "movie_id": {"use": "ml_eligible", "notes": "Internal catalog identifier"},
+        "propensity": {"use": "ml_eligible", "notes": "Only when logged by the selecting policy"},
+        "user_email": {"use": "prohibited", "notes": "Authentication PII is not a recommender feature"}
+      }
+    },
+    "movielens_latest_small": {
+      "source": "GroupLens Research, University of Minnesota",
+      "terms_url": "https://files.grouplens.org/datasets/movielens/ml-latest-small-README.html",
+      "reviewed_at": "2026-10-26",
+      "license": "Research use; non-commercial unless written permission is obtained",
+      "allowed_contexts": ["development", "research"],
+      "attribution": ["Acknowledge GroupLens/University of Minnesota; do not imply endorsement"],
+      "fields": {
+        "genres": {"use": "ml_eligible", "notes": "Eligible under MovieLens terms in approved contexts"},
+        "movie_id": {"use": "ml_eligible", "notes": "MovieLens namespace; map explicitly to application/TMDB IDs"},
+        "rating": {"use": "ml_eligible", "notes": "Never identify MovieLens users as application users"},
+        "tags": {"use": "ml_eligible", "notes": "Free text requires additional content-safety handling"},
+        "timestamp": {"use": "ml_eligible", "notes": "Used for chronological splitting"},
+        "title": {"use": "ml_eligible", "notes": "Eligible under MovieLens terms in approved contexts"},
+        "user_id": {"use": "ml_eligible", "notes": "MovieLens-only pseudonymous namespace"}
+      }
+    },
+    "movielens_32m": {
+      "source": "GroupLens Research, University of Minnesota",
+      "terms_url": "https://files.grouplens.org/datasets/movielens/ml-32m-README.html",
+      "reviewed_at": "2026-10-26",
+      "license": "Research use; non-commercial unless written permission is obtained",
+      "allowed_contexts": ["development", "research"],
+      "attribution": ["Acknowledge GroupLens/University of Minnesota; do not imply endorsement"],
+      "fields": {
+        "genres": {"use": "ml_eligible", "notes": "Eligible under MovieLens terms in approved contexts"},
+        "movie_id": {"use": "ml_eligible", "notes": "MovieLens namespace"},
+        "rating": {"use": "ml_eligible", "notes": "Never identify MovieLens users as application users"},
+        "timestamp": {"use": "ml_eligible", "notes": "Used for chronological splitting"},
+        "title": {"use": "ml_eligible", "notes": "Eligible under MovieLens terms in approved contexts"},
+        "user_id": {"use": "ml_eligible", "notes": "MovieLens-only pseudonymous namespace"}
+      }
+    },
+    "tmdb_api": {
+      "source": "The Movie Database (TMDB)",
+      "terms_url": "https://developer.themoviedb.org/docs/faq",
+      "reviewed_at": "2026-10-26",
+      "license": "Non-commercial API display use with attribution; commercial use requires a license; ML use not expressly granted",
+      "allowed_contexts": ["development", "research", "commercial"],
+      "attribution": [
+        "Use an approved TMDB logo",
+        "This product uses the TMDB API but is not endorsed or certified by TMDB."
+      ],
+      "fields": {
+        "cast": {"use": "display_only", "notes": "Persistent ML use blocked pending explicit permission"},
+        "director": {"use": "display_only", "notes": "Persistent ML use blocked pending explicit permission"},
+        "genres": {"use": "display_only", "notes": "Persistent ML use blocked pending explicit permission"},
+        "keywords": {"use": "display_only", "notes": "Persistent ML use blocked pending explicit permission"},
+        "movie_id": {"use": "display_only", "notes": "Application mapping only; not a semantic feature"},
+        "overview": {"use": "display_only", "notes": "Persistent embeddings blocked pending explicit permission"},
+        "poster_path": {"use": "display_only", "notes": "Display through approved TMDB image URLs with attribution"},
+        "provider_availability": {"use": "display_only", "notes": "Display only; JustWatch attribution is required"},
+        "title": {"use": "display_only", "notes": "Persistent ML use blocked pending explicit permission"},
+        "tmdb_id": {"use": "display_only", "notes": "Stable catalog linkage; not a learned semantic feature"}
+      }
+    },
+    "all_minilm_l6_v2": {
+      "source": "sentence-transformers/all-MiniLM-L6-v2",
+      "terms_url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
+      "reviewed_at": "2026-10-26",
+      "license": "Apache-2.0 model files; upstream training-data restrictions require separate commercial review",
+      "allowed_contexts": ["development", "research"],
+      "attribution": ["Retain Apache-2.0 license and notices when redistributing the model"],
+      "fields": {
+        "model_output": {"use": "ml_eligible", "notes": "Only embed source text independently approved for ML use"}
+      }
+    }
+  }
+}

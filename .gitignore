@@ -19,3 +19,5 @@ frontend/test-results/
 cinematch.db
 *.sqlite
 *.sqlite3
+.neon
+node_modules/

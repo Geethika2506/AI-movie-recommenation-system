@@ -9,9 +9,7 @@ class Base(DeclarativeBase):
 
 
 def make_engine(url: str) -> Engine:
-    connect_args = (
-        {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
-    )
+    connect_args = {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
     engine = create_engine(url, connect_args=connect_args, pool_pre_ping=True)
     if url.startswith("sqlite"):
         event.listen(engine, "connect", _enable_sqlite_foreign_keys)

@@ -3,7 +3,7 @@ from collections import defaultdict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend.models import Interaction, InteractionKind, Movie, Rating, UserMovieState
+from backend.models import Interaction, InteractionKind, Movie, Profile, Rating, UserMovieState
 
 
 def recommend_for_profile(
@@ -33,9 +33,23 @@ def recommend_for_profile(
     states = list(
         session.scalars(select(UserMovieState).where(UserMovieState.profile_id == profile_id))
     )
-    blocked.update(state.movie_id for state in states if state.watched)
+    blocked.update(
+        state.movie_id
+        for state in states
+        if state.preference is not None or (state.watched and not include_watched)
+    )
     liked_genres: defaultdict[str, float] = defaultdict(float)
     genre_counts: defaultdict[str, float] = defaultdict(float)
+    disliked_genres: set[str] = set()
+    profile = session.get(Profile, profile_id)
+    if profile:
+        for genre in profile.seed_preferred_genres or []:
+            liked_genres[genre] += 2.0
+            genre_counts[genre] += 2.0
+        for genre in profile.seed_disliked_genres or []:
+            liked_genres[genre] -= 1.5
+            genre_counts[genre] += 1.5
+            disliked_genres.add(genre)
     movie_map = {movie.id: movie for movie in movies}
     for movie_id, value in ratings:
         rated_movie = movie_map.get(movie_id)
@@ -45,7 +59,6 @@ def recommend_for_profile(
             liked_genres[genre] += signal
             genre_counts[genre] += abs(signal)
     liked_movie_ids: list[int] = []
-    disliked_genres: set[str] = set()
     for state in states:
         state_movie = movie_map.get(state.movie_id)
         if not state_movie:
@@ -102,6 +115,8 @@ def recommend_for_profile(
                 f"Similar to {len(liked_movie_ids)} movie"
                 f"{'s' if len(liked_movie_ids) != 1 else ''} you liked; matches {positive[0]}"
             )
+        elif positive and profile and profile.seed_preferred_genres:
+            reason = f"Based on genres you selected, including {positive[0]}"
         elif mix > 0.6 and popularity_norm < 0.45:
             reason = "A less familiar pick from your current discovery mix"
         elif negative:

@@ -61,9 +61,7 @@ def test_hydrate_posters_uses_disk_cache_without_network(tmp_path: Path) -> None
     factory = make_session_factory(engine)
     cache = wikipedia_cache_path(tmp_path)
     cache.parent.mkdir(parents=True)
-    cache.write_text(
-        '{"movie_id": 1, "poster_path": "https://images.example/poster.jpg"}\n'
-    )
+    cache.write_text('{"movie_id": 1, "poster_path": "https://images.example/poster.jpg"}\n')
     with factory() as session:
         movie = Movie(id=1, title="Toy Story", year=1995, genres=["Animation"])
         session.add(movie)

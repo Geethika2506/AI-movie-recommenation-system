@@ -1,8 +1,9 @@
 import { movies, settings } from "./data";
-import type { Evaluation, Group, Movie, MovieAction, PreferenceResult, Profile, Settings, SwipeAction } from "./types";
+import type { Evaluation, Group, GroupRoom, GroupSession, Movie, MovieAction, PreferenceResult, Profile, Settings, SwipeAction, User } from "./types";
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ?? "/api";
-const demoFallback = import.meta.env.VITE_DEMO_FALLBACK !== "false";
+const demoFallback = import.meta.env.VITE_DEMO_FALLBACK === "true" || import.meta.env.MODE === "test";
+let accessToken = "";
 const sessionKey = (() => {
   const existing = localStorage.getItem("cinematch:session");
   if (existing) return existing;
@@ -17,17 +18,45 @@ class ApiError extends Error {
   }
 }
 
+function errorDetail(detail: unknown): string | undefined {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const first = detail.find((item) => item && typeof item === "object" && "msg" in item) as { msg?: string } | undefined;
+    return first?.msg;
+  }
+  return undefined;
+}
+
+async function rawRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cinematch-Session": sessionKey,
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...init?.headers,
+    },
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+    throw new ApiError(errorDetail(body?.detail) ?? `Request failed (${response.status})`, response.status);
+  }
+  return response.status === 204 ? (undefined as T) : await response.json() as T;
+}
+
 async function request<T>(path: string, init?: RequestInit, fallback?: T): Promise<T> {
   try {
-    const response = await fetch(`${API_URL}${path}`, {
-      ...init,
-      headers: { "Content-Type": "application/json", "X-Cinematch-Session": sessionKey, ...init?.headers },
-    });
-    if (!response.ok) {
-      const detail = await response.json().catch(() => null) as { detail?: string } | null;
-      throw new ApiError(detail?.detail ?? `Request failed (${response.status})`, response.status);
+    try {
+      return await rawRequest<T>(path, init);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401 && !path.startsWith("/auth/")) {
+        const refreshed = await rawRequest<ApiAuth>("/auth/refresh", { method: "POST" });
+        accessToken = refreshed.access_token;
+        return await rawRequest<T>(path, init);
+      }
+      throw error;
     }
-    return response.status === 204 ? (undefined as T) : await response.json() as T;
   } catch (error) {
     if (demoFallback && (fallback !== undefined || init?.method) && (!(error instanceof ApiError) || error.status >= 500)) {
       return fallback as T;
@@ -51,8 +80,19 @@ type ApiMovie = {
 };
 type ApiRecommendation = {
   movie: ApiMovie; score: number; reason: string; model_version: string;
+  request_id?: string; impression_id?: string; policy_version?: string;
 };
-type ApiProfile = { id: number; name: string };
+type ApiProfile = {
+  id: number;
+  name: string;
+  seed_preferred_genres?: string[];
+  seed_disliked_genres?: string[];
+};
+type ApiUser = {
+  id: number; username: string; email: string; country: string | null;
+  streaming_provider_ids: number[];
+};
+type ApiAuth = { access_token: string; expires_at: string; user: ApiUser };
 type ApiMoviePage = { items: ApiMovie[]; total: number };
 type ApiModelRun = { model_name: string; metrics: Record<string, number> };
 type ApiPreference = {
@@ -61,6 +101,14 @@ type ApiPreference = {
 type ApiGroup = {
   id: number; name: string; owner_profile_id: number; recommendation_version: number;
   members: { profile_id: number; name: string; role: string; feedback_count: number; needs_onboarding: boolean }[];
+};
+type ApiGroupSession = {
+  id: string; group_id: number; room_id?: number | null; status: string; participant_profile_ids: number[];
+  participant_set_version: number; selected_movie_id: number | null;
+};
+type ApiRoom = {
+  id: number; group_id: number; invite_id: number; host_profile_id: number; host_name: string; name: string;
+  members: { profile_id: number; name: string; host: boolean }[];
 };
 const mapGroup = (group: ApiGroup): Group => ({
   id: group.id,
@@ -75,6 +123,28 @@ const mapGroup = (group: ApiGroup): Group => ({
     needsOnboarding: member.needs_onboarding,
   })),
 });
+const mapGroupSession = (session: ApiGroupSession): GroupSession => ({
+  id: session.id,
+  groupId: session.group_id,
+  roomId: session.room_id ?? undefined,
+  status: session.status,
+  participantProfileIds: session.participant_profile_ids,
+  participantSetVersion: session.participant_set_version,
+  selectedMovieId: session.selected_movie_id ?? undefined,
+});
+const mapRoom = (room: ApiRoom): GroupRoom => ({
+  id: room.id,
+  groupId: room.group_id,
+  inviteId: room.invite_id,
+  hostProfileId: room.host_profile_id,
+  hostName: room.host_name,
+  name: room.name,
+  members: room.members.map((member) => ({
+    profileId: member.profile_id,
+    name: member.name,
+    host: member.host,
+  })),
+});
 
 const mapMovie = (movie: ApiMovie, recommendation?: ApiRecommendation): Movie => ({
   id: movie.id,
@@ -87,6 +157,9 @@ const mapMovie = (movie: ApiMovie, recommendation?: ApiRecommendation): Movie =>
   reason: recommendation?.reason ?? "",
   synopsis: movie.overview ?? "Extended metadata is not available for this title.",
   posterUrl: movie.poster_url ?? undefined,
+  requestId: recommendation?.request_id,
+  impressionId: recommendation?.impression_id,
+  policyVersion: recommendation?.policy_version,
 });
 
 const withMatchScores = (movies: Movie[]): Movie[] => {
@@ -101,14 +174,132 @@ const withMatchScores = (movies: Movie[]): Movie[] => {
   }));
 };
 
+const profileColors = ["#f6b84b", "#77cbb9", "#dd7d91", "#9b8ee8"];
+
 const mapProfile = (profile: ApiProfile, index = 0): Profile => ({
   id: profile.id,
   name: profile.name,
-  color: ["#f6b84b", "#77cbb9", "#dd7d91", "#9b8ee8"][index % 4],
+  color: profileColors[index % profileColors.length],
   onboarded: false,
+  seedPreferredGenres: profile.seed_preferred_genres ?? [],
+  seedDislikedGenres: profile.seed_disliked_genres ?? [],
+});
+
+const mergeProfileMetadata = (
+  server: Profile,
+  local: Profile | undefined,
+  index: number,
+): Profile => ({
+  id: server.id,
+  name: server.name,
+  color: local?.color ?? profileColors[index % profileColors.length],
+  onboarded: local?.onboarded ?? false,
+  seedPreferredGenres: server.seedPreferredGenres ?? [],
+  seedDislikedGenres: server.seedDislikedGenres ?? [],
+});
+
+/** Replace stale browser profile IDs with the authenticated user's server profiles. */
+async function syncProfilesWithServer(localProfiles: Profile[]): Promise<Profile[]> {
+  let remote: ApiProfile[];
+  try {
+    remote = await rawRequest<ApiProfile[]>("/profiles");
+  } catch {
+    return [];
+  }
+  const localsById = new Map(localProfiles.filter((profile) => profile.id > 0).map((profile) => [profile.id, profile]));
+  const localsByName = new Map(localProfiles.map((profile) => [profile.name.toLowerCase(), profile]));
+  const merged: Profile[] = remote.map((profile, index) => {
+    const server = mapProfile(profile, index);
+    const local =
+      localsById.get(profile.id) ?? localsByName.get(profile.name.toLowerCase());
+    return mergeProfileMetadata(server, local, index);
+  });
+  const mergedNames = new Set(merged.map((profile) => profile.name.toLowerCase()));
+  for (const local of localProfiles) {
+    if (local.id > 0 && remote.some((profile) => profile.id === local.id)) {
+      continue;
+    }
+    if (mergedNames.has(local.name.toLowerCase())) {
+      continue;
+    }
+    if (local.id > 0) {
+      continue;
+    }
+    try {
+      const created = mapProfile(
+        await rawRequest<ApiProfile>("/profiles", {
+          method: "POST",
+          body: JSON.stringify({ name: local.name }),
+        }),
+        merged.length,
+      );
+      merged.push({ ...created, color: local.color, onboarded: local.onboarded });
+      mergedNames.add(local.name.toLowerCase());
+    } catch {
+      // Keep going if a pending local profile cannot be created yet.
+    }
+  }
+  return merged;
+}
+const mapUser = (user: ApiUser): User => ({
+  id: user.id,
+  username: user.username,
+  email: user.email,
+  country: user.country ?? undefined,
+  streamingProviderIds: user.streaming_provider_ids,
 });
 
 export const api = {
+  register: (username: string, email: string, password: string, profileName: string) =>
+    request<ApiAuth>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, email, password, profile_name: profileName }),
+    }).then((result) => {
+      accessToken = result.access_token;
+      return mapUser(result.user);
+    }),
+  login: (email: string, password: string) =>
+    request<ApiAuth>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }).then((result) => {
+      accessToken = result.access_token;
+      return mapUser(result.user);
+    }),
+  restoreSession: () => rawRequest<ApiAuth>("/auth/refresh", { method: "POST" })
+    .then((result) => {
+      accessToken = result.access_token;
+      return mapUser(result.user);
+    }),
+  logout: () => request<void>("/auth/logout", { method: "POST" }).finally(() => {
+    accessToken = "";
+  }),
+  me: () => request<ApiUser>("/users/me").then(mapUser),
+  updateServices: (country: string, providerIds: number[]) =>
+    request<ApiUser>("/users/me", {
+      method: "PATCH",
+      body: JSON.stringify({ country, streaming_provider_ids: providerIds }),
+    }).then(mapUser),
+  resetRecommendations: () =>
+    request<void>("/users/me/recommendations/reset", { method: "POST" }),
+  requestVerification: (body: {
+    purpose: "username" | "email" | "password";
+    current_password: string;
+    username?: string;
+    email?: string;
+    password?: string;
+  }) => request<{
+    purpose: "username" | "email" | "password";
+    sent_to: string;
+    expires_at: string;
+    delivery: "email" | "preview";
+    preview_code?: string | null;
+  }>("/users/me/verification", { method: "POST", body: JSON.stringify(body) }),
+  confirmVerification: (purpose: "username" | "email" | "password", code: string) =>
+    request<ApiUser>("/users/me/verification/confirm", {
+      method: "POST",
+      body: JSON.stringify({ purpose, code }),
+    }).then(mapUser),
   movies: async (query = "", page = 1, pageSize = 48) => {
     const fallback = movies.filter((movie) => movie.title.toLowerCase().includes(query.toLowerCase()));
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
@@ -143,6 +334,7 @@ export const api = {
     .then((profiles) => profiles.map((profile, index) =>
       "color" in profile ? profile : mapProfile(profile, index)
     )),
+  syncProfiles: syncProfilesWithServer,
   saveProfiles: (profiles: Profile[]) => {
     localStorage.setItem("cinematch:profiles", JSON.stringify(profiles));
   },
@@ -157,15 +349,46 @@ export const api = {
       throw error;
     }
   },
+  saveOnboardingPreferences: (profileId: number, preferredGenres: string[], dislikedGenres: string[]) =>
+    request<ApiProfile>(`/profiles/${profileId}/onboarding-preferences`, {
+      method: "PUT",
+      body: JSON.stringify({
+        preferred_genres: preferredGenres,
+        disliked_genres: dislikedGenres,
+      }),
+    }).then(mapProfile),
   rate: (profileId: number, movieId: number, rating: number) =>
     request<void>(`/profiles/${profileId}/ratings/${movieId}`, { method: "PUT", body: JSON.stringify({ value: rating }) }, undefined),
   act: (profileId: number, movieId: number, action: MovieAction) =>
     request<void>(`/profiles/${profileId}/interactions/${action === "dismiss" ? "dismissed" : action}/${movieId}`, { method: "PUT", body: JSON.stringify({ active: true }) }, undefined),
-  preference: (profileId: number, movieId: number, action: SwipeAction, requestId: string): Promise<PreferenceResult> =>
-    request<ApiPreference>(`/profiles/${profileId}/preferences/${movieId}`, {
+  wishlist: (profileId: number) =>
+    profileId <= 0
+      ? Promise.resolve([] as Movie[])
+      : request<ApiMovie[]>(`/profiles/${profileId}/wishlist`).then((movies) => movies.map((movie) => mapMovie(movie))),
+  addToWishlist: (profileId: number, movie: Movie, requestId = crypto.randomUUID()) =>
+    request<ApiPreference>(`/profiles/${profileId}/preferences/${movie.id}`, {
       method: "PUT",
-      body: JSON.stringify({ action, request_id: requestId }),
-    }, { movie_id: movieId, action_id: Date.now(), recommendation_version: 0 }).then((result) => ({
+      body: JSON.stringify({
+        action: "watchlist",
+        request_id: requestId,
+        origin: "organic",
+      }),
+    }, { movie_id: movie.id, action_id: Date.now(), recommendation_version: 0 }),
+  removeFromWishlist: (profileId: number, movieId: number) =>
+    request<void>(`/profiles/${profileId}/wishlist/${movieId}`, { method: "DELETE" }),
+  preference: (profileId: number, movie: Movie, action: SwipeAction, requestId: string): Promise<PreferenceResult> =>
+    request<ApiPreference>(`/profiles/${profileId}/preferences/${movie.id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        action,
+        request_id: requestId,
+        origin: movie.policyVersion && movie.policyVersion !== "none"
+          ? "bandit_policy"
+          : movie.requestId ? "recommendation" : "organic",
+        recommendation_request_id: movie.requestId,
+        impression_id: movie.impressionId,
+      }),
+    }, { movie_id: movie.id, action_id: Date.now(), recommendation_version: 0 }).then((result) => ({
       movieId: result.movie_id,
       actionId: result.action_id,
       recommendationVersion: result.recommendation_version,
@@ -179,7 +402,7 @@ export const api = {
   createGroup: (name: string, profileId: number) =>
     request<ApiGroup>("/groups", { method: "POST", body: JSON.stringify({ name, profile_id: profileId }) }).then(mapGroup),
   createInvite: (groupId: number, profileId: number) =>
-    request<{ id: number; token: string; invite_url: string; expires_at: string }>(`/groups/${groupId}/invites`, {
+    request<{ id: number; token: string; invite_url: string; expires_at: string; room_id: number; room_name: string }>(`/groups/${groupId}/invites`, {
       method: "POST",
       body: JSON.stringify({ profile_id: profileId, expires_in_hours: 48 }),
     }),
@@ -188,15 +411,55 @@ export const api = {
   removeGroupMember: (groupId: number, memberProfileId: number, requesterProfileId: number) =>
     request<void>(`/groups/${groupId}/members/${memberProfileId}?requester_profile_id=${requesterProfileId}`, { method: "DELETE" }),
   joinGroup: (token: string, profileId: number) =>
-    request<ApiGroup>(`/group-invites/${encodeURIComponent(token)}/join`, {
+    request<ApiGroup & { joined_room_id?: number; joined_room_name?: string }>(`/group-invites/${encodeURIComponent(token)}/join`, {
       method: "POST",
       body: JSON.stringify({ profile_id: profileId }),
-    }).then(mapGroup),
+    }).then((group) => ({
+      group: mapGroup(group),
+      roomId: group.joined_room_id,
+      roomName: group.joined_room_name,
+    })),
+  groupRooms: (groupId: number, profileId: number) =>
+    request<ApiRoom[]>(`/groups/${groupId}/rooms?profile_id=${profileId}`, undefined, []).then((rooms) => rooms.map(mapRoom)),
   groupRecommendations: (groupId: number, profileId: number, strategy: "balanced" | "everyone_matters", includeWatched: boolean) =>
     request<ApiRecommendation[]>(`/groups/${groupId}/recommendations`, {
       method: "POST",
       body: JSON.stringify({ requester_profile_id: profileId, strategy, include_watched: includeWatched, limit: 40 }),
     }).then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row)))),
+  createGroupSession: (groupId: number, requesterProfileId: number, participantProfileIds: number[], roomId?: number) =>
+    request<ApiGroupSession>(`/groups/${groupId}/sessions`, {
+      method: "POST",
+      body: JSON.stringify({
+        requester_profile_id: requesterProfileId,
+        participant_profile_ids: participantProfileIds,
+        room_id: roomId,
+        consensus_policy: "majority",
+        ranking_algorithm: "fair_consensus",
+      }),
+    }).then(mapGroupSession),
+  roomRecommendations: (groupId: number, roomId: number, profileId: number, strategy: "balanced" | "everyone_matters", includeWatched: boolean) =>
+    request<ApiRecommendation[]>(`/groups/${groupId}/rooms/${roomId}/recommendations`, {
+      method: "POST",
+      body: JSON.stringify({ requester_profile_id: profileId, strategy, include_watched: includeWatched, limit: 40 }),
+    }).then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row)))),
+  groupSessions: (groupId: number, profileId: number) =>
+    request<ApiGroupSession[]>(`/groups/${groupId}/sessions?profile_id=${profileId}`)
+      .then((sessions) => sessions.map(mapGroupSession)),
+  sessionRecommendations: (sessionId: string, profileId: number) =>
+    request<ApiRecommendation[]>(`/sessions/${sessionId}/recommendations?profile_id=${profileId}`)
+      .then((rows) => withMatchScores(rows.map((row) => mapMovie(row.movie, row)))),
+  groupVote: (sessionId: string, profileId: number, movieId: number, action: "like" | "love" | "dislike" | "veto" | "skip") =>
+    request(`/sessions/${sessionId}/votes`, {
+      method: "POST",
+      body: JSON.stringify({
+        profile_id: profileId, movie_id: movieId, action, request_id: crypto.randomUUID(),
+      }),
+    }),
+  finalizeSession: (sessionId: string, profileId: number, movieId: number) =>
+    request<ApiGroupSession>(`/sessions/${sessionId}/finalize`, {
+      method: "POST",
+      body: JSON.stringify({ requester_profile_id: profileId, movie_id: movieId }),
+    }).then(mapGroupSession),
   evaluation: () => request<ApiModelRun[]>("/models", undefined, []).then((runs): Evaluation[] =>
     [...runs].sort((left, right) => (right.metrics.ndcg_at_k ?? 0) - (left.metrics.ndcg_at_k ?? 0)).map((run) => ({
       model: run.model_name,

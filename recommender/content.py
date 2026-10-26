@@ -1,18 +1,33 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+from recommender.data_governance import DataPolicyManifest
+
+DEFAULT_POLICY_PATH = Path(__file__).parents[1] / "configs" / "data_sources.json"
+
 
 @dataclass
 class ContentRecommender:
     max_features: int = 20_000
 
-    def fit(self, movies: pd.DataFrame) -> "ContentRecommender":
+    def fit(
+        self,
+        movies: pd.DataFrame,
+        *,
+        source: str = "movielens_latest_small",
+        context: str = "development",
+        policy_path: Path = DEFAULT_POLICY_PATH,
+    ) -> "ContentRecommender":
         if not {"movie_id", "title", "genres"}.issubset(movies.columns):
             raise ValueError("movies require movie_id, title and genres")
+        DataPolicyManifest.load(policy_path).require_ml_fields(
+            source, {"movie_id", "title", "genres"}, context
+        )
         text = (
             movies["genres"].fillna("").str.replace("|", " ", regex=False)
             + " "

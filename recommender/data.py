@@ -3,9 +3,12 @@ import json
 import urllib.request
 import zipfile
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
+
+from recommender.data_governance import DataPolicyManifest, write_dataset_provenance
 
 DATASETS = {
     "latest-small": "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip",
@@ -83,6 +86,17 @@ def profile_dataset(name: str, movies: pd.DataFrame, ratings: pd.DataFrame) -> D
 
 def prepare_dataset(name: str, source: Path, output: Path) -> DatasetProfile:
     movies, ratings, links = load_and_validate(source)
+    policy_path = Path(__file__).parents[1] / "configs" / "data_sources.json"
+    policy = DataPolicyManifest.load(policy_path)
+    policy_source = {
+        "latest-small": "movielens_latest_small",
+        "32m": "movielens_32m",
+    }[name]
+    policy.require_ml_fields(
+        policy_source,
+        {"movie_id", "user_id", "rating", "timestamp", "title", "genres"},
+        "development",
+    )
     output.mkdir(parents=True, exist_ok=True)
     user_ids = sorted(ratings["user_id"].unique())
     movie_ids = sorted(movies["movie_id"].unique())
@@ -96,6 +110,18 @@ def prepare_dataset(name: str, source: Path, output: Path) -> DatasetProfile:
     (output / "mappings.json").write_text(json.dumps(mappings, sort_keys=True))
     profile = profile_dataset(name, movies, ratings)
     (output / "dataset.json").write_text(json.dumps(asdict(profile), indent=2))
+    write_dataset_provenance(
+        output / "provenance.json",
+        source=policy_source,
+        source_fingerprint=profile.fingerprint,
+        policy_fingerprint=policy.fingerprint(),
+        transformations=[
+            "column names normalized to snake_case",
+            "ratings and identifiers validated",
+            "stable user and movie index mappings generated",
+        ],
+        created_at=datetime.now(UTC).isoformat(),
+    )
     return profile
 
 

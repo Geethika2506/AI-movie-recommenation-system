@@ -1,4 +1,5 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap");
+@import "tailwindcss";
 
 :root {
   font-family: "DM Sans", system-ui, sans-serif;
@@ -75,6 +76,23 @@ select, input { color: #f7f4eb; background: var(--surface-2); border: 1px solid 
 .movie-copy > p { color: var(--muted); margin: .15rem 0; font-size: .78rem; }
 .movie-copy small { color: #c9c4b8; display: block; line-height: 1.45; margin-top: .55rem; min-height: 2.8em; }
 .movie-genres { color: var(--accent) !important; text-transform: uppercase; letter-spacing: .09em; margin-top: .75rem !important; }
+
+.onboarding-questions fieldset { border: 0; margin: 0 0 1.75rem; padding: 0; }
+.onboarding-questions legend { font-weight: 700; font-size: 1.05rem; margin-bottom: .35rem; }
+.field-hint { color: var(--muted); margin: 0 0 .75rem; font-size: .9rem; }
+.genre-chip-grid { display: flex; flex-wrap: wrap; gap: .55rem; }
+.genre-chip {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: .45rem .85rem;
+  font-size: .88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.genre-chip.selected.want { border-color: var(--accent); background: var(--accent-dark); color: #fff; }
+.genre-chip.selected.avoid { border-color: var(--danger); background: #2a1818; color: #ffd8d8; }
+.genre-chip:disabled { opacity: .45; cursor: not-allowed; }
 .poster { aspect-ratio: 2/3; border-radius: .65rem; border: 1px solid #ffffff16; overflow: hidden; background: linear-gradient(145deg, #5c4a2f, #25231f 45%, #151514); box-shadow: 0 12px 30px #0004; }
 .poster.has-image { background: #121211; }
 .poster img { display: block; width: 100%; height: 100%; min-height: 100%; object-fit: cover; position: relative; z-index: 1; }
@@ -176,6 +194,17 @@ input[type="range"] { accent-color: var(--accent); padding: 0; }
 .settings-grid h2 { font: 700 1.6rem "Playfair Display"; margin: .4rem 0; }
 .settings-grid p { color: var(--muted); line-height: 1.6; }
 .settings-grid .full { grid-column: 1/-1; }
+.account-card, .settings-form, .room-card { padding: 1.2rem; margin-top: 1rem; }
+.account-card, .settings-form { display: grid; gap: .9rem; }
+.account-card h2, .room-card h2, .settings-form h2 { font: 700 1.6rem "Playfair Display"; margin: 0; }
+.account-card form, .account-card label, .settings-form label { display: grid; gap: .35rem; }
+.account-card p, .room-card p, .settings-form small { color: var(--muted); line-height: 1.5; }
+.account-actions, .room-card .room-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.preview-code { border: 1px solid #55431f; background: var(--accent-dark); border-radius: .6rem; padding: .8rem 1rem; color: #f5f1e8; }
+.room-list { display: grid; gap: 1rem; margin-top: 1rem; }
+.room-card.highlighted { border-color: var(--accent); }
+.room-card h3 { margin: 1rem 0 .4rem; }
+.danger-button { border-color: #6e3434; color: #ffd0d0; }
 dl > div { display: flex; justify-content: space-between; border-top: 1px solid var(--line); padding: .7rem 0; }
 dt { color: var(--muted); } dd { margin: 0; font-weight: 700; }
 .state { border: 1px dashed var(--line); border-radius: .8rem; padding: 4rem 1rem; text-align: center; color: var(--muted); }
@@ -232,3 +261,12 @@ footer p { margin-right: auto; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.loading-page, .auth-page { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; }
+.auth-card { width: min(100%, 440px); display: grid; gap: 1rem; }
+.auth-card form { display: grid; gap: .9rem; }
+.auth-card label { display: grid; gap: .35rem; font-weight: 700; }
+.auth-card input { width: 100%; }
+.auth-brand { font-size: 2rem; }
+.form-error, .save-error { color: #ff9ca9; }
+.signed-in-user { color: var(--muted); font-size: .9rem; }

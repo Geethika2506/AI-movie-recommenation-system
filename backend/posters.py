@@ -50,9 +50,7 @@ def load_poster_cache(path: Path) -> dict[int, str | None]:
 
 def append_poster_cache(path: Path, movie_id: int, poster_path: str | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(
-        {"movie_id": movie_id, "poster_path": poster_path, "v": CACHE_VERSION}
-    )
+    payload = json.dumps({"movie_id": movie_id, "poster_path": poster_path, "v": CACHE_VERSION})
     with _cache_lock, path.open("a") as stream:
         stream.write(payload + "\n")
 
@@ -239,12 +237,14 @@ def hydrate_posters(
         elif movie.id not in cache and enabled:
             pending.append(movie)
     if pending:
+
         def lookup(movie: Movie, http: httpx.Client) -> tuple[Movie, str | None]:
             return movie, lookup_poster(movie.title, movie.year, imdb_ids.get(movie.id), http)
 
         if client is not None:
             found = [lookup(movie, client) for movie in pending]
         else:
+
             def fetch(movie: Movie) -> tuple[Movie, str | None]:
                 with httpx.Client(
                     timeout=8, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}

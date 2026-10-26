@@ -52,7 +52,11 @@ def upgrade() -> None:
     )
     op.execute(sa.text("DROP TABLE profiles"))
     op.execute(sa.text("ALTER TABLE profiles_owner_scoped RENAME TO profiles"))
-    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_profiles_owner_key_hash ON profiles (owner_key_hash)"))
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_profiles_owner_key_hash ON profiles (owner_key_hash)"
+        )
+    )
     op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_profiles_name ON profiles (name)"))
     op.execute(sa.text("PRAGMA foreign_keys=ON"))
 

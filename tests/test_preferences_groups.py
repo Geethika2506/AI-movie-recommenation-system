@@ -58,26 +58,35 @@ def test_swipe_states_idempotency_ownership_undo_and_exclusion(tmp_path: Path) -
         assert first.status_code == 200
         assert duplicate.json()["action_id"] == first.json()["action_id"]
         assert duplicate.json()["recommendation_version"] == 1
-        assert first.json()["watched"] is True
+        assert first.json()["watched"] is False
         assert first.json()["preference"] == "liked"
 
-        assert client.put(
-            f"/api/profiles/{alice}/preferences/2",
-            json={"action": "disliked", "request_id": "dislike-request-2"},
-            headers=B,
-        ).status_code == 403
-        assert client.put(
-            f"/api/profiles/{alice}/preferences/2",
-            json={"action": "skip", "request_id": "skip-request-0002"},
-            headers=A,
-        ).json()["watched"] is False
+        assert (
+            client.put(
+                f"/api/profiles/{alice}/preferences/2",
+                json={"action": "disliked", "request_id": "dislike-request-2"},
+                headers=B,
+            ).status_code
+            == 403
+        )
+        assert (
+            client.put(
+                f"/api/profiles/{alice}/preferences/2",
+                json={"action": "skip", "request_id": "skip-request-0002"},
+                headers=A,
+            ).json()["watched"]
+            is False
+        )
         with client.app.state.session_factory() as session:
-            assert session.scalar(
-                select(UserMovieState).where(
-                    UserMovieState.profile_id == alice,
-                    UserMovieState.movie_id == 2,
+            assert (
+                session.scalar(
+                    select(UserMovieState).where(
+                        UserMovieState.profile_id == alice,
+                        UserMovieState.movie_id == 2,
+                    )
                 )
-            ) is None
+                is None
+            )
 
         undo_skip = client.post(
             f"/api/profiles/{alice}/preferences/2/undo",
@@ -106,6 +115,12 @@ def test_swipe_states_idempotency_ownership_undo_and_exclusion(tmp_path: Path) -
         assert disliked.json()["preference"] == "disliked"
         assert watchlist.json()["watchlist"] is True
         assert watchlist.json()["watched"] is False
+        saved = client.get(f"/api/profiles/{alice}/wishlist", headers=A)
+        assert saved.status_code == 200
+        assert {row["id"] for row in saved.json()} == {3}
+        removed = client.delete(f"/api/profiles/{alice}/wishlist/3", headers=A)
+        assert removed.status_code == 204
+        assert client.get(f"/api/profiles/{alice}/wishlist", headers=A).json() == []
         recommended_ids = {
             row["movie"]["id"]
             for row in client.get(
@@ -195,15 +210,21 @@ def test_invite_lifecycle_membership_privacy_and_cache_versions(tmp_path: Path) 
             json={"profile_id": alice},
             headers=A,
         ).json()
-        assert client.delete(
-            f"/api/groups/{group['id']}/invites/{revoked['id']}?profile_id={alice}",
-            headers=A,
-        ).status_code == 204
-        assert client.post(
-            f"/api/group-invites/{revoked['token']}/join",
-            json={"profile_id": bob},
-            headers=B,
-        ).status_code == 410
+        assert (
+            client.delete(
+                f"/api/groups/{group['id']}/invites/{revoked['id']}?profile_id={alice}",
+                headers=A,
+            ).status_code
+            == 204
+        )
+        assert (
+            client.post(
+                f"/api/group-invites/{revoked['token']}/join",
+                json={"profile_id": bob},
+                headers=B,
+            ).status_code
+            == 410
+        )
 
         expired = client.post(
             f"/api/groups/{group['id']}/invites",
@@ -220,11 +241,14 @@ def test_invite_lifecycle_membership_privacy_and_cache_versions(tmp_path: Path) 
             assert record is not None
             record.expires_at = datetime.now(UTC) - timedelta(minutes=1)
             session.commit()
-        assert client.post(
-            f"/api/group-invites/{expired['token']}/join",
-            json={"profile_id": bob},
-            headers=B,
-        ).status_code == 410
+        assert (
+            client.post(
+                f"/api/group-invites/{expired['token']}/join",
+                json={"profile_id": bob},
+                headers=B,
+            ).status_code
+            == 410
+        )
 
         with client.app.state.session_factory() as session:
             assert session.scalar(select(PreferenceEvent).where(PreferenceEvent.profile_id == bob))

@@ -1,14 +1,20 @@
 import { expect, test } from "@playwright/test";
 
 test("profile feedback changes recommendations", async ({ page }, testInfo) => {
-  await page.goto("/profiles");
-  await page.getByPlaceholder("Profile name").fill(`Avery ${testInfo.project.name} ${Date.now()}`);
-  await page.getByRole("button", { name: "Create profile" }).click();
+  const unique = `${testInfo.project.name}-${Date.now()}`.replace(/[^a-zA-Z0-9]/g, "");
+  await page.goto("/");
+  await page.getByRole("button", { name: "Need an account? Register" }).click();
+  await page.getByLabel("Username").fill(`avery${unique}`);
+  await page.getByLabel("Profile name").fill(`Avery ${unique}`);
+  await page.getByLabel("Email").fill(`avery-${unique}@example.com`);
+  await page.getByLabel("Password").fill("correct-horse-battery");
+  await page.getByRole("button", { name: "Register" }).click();
 
-  await expect(page.getByRole("heading", { name: "What have you watched?" })).toBeVisible();
-  await page.getByRole("button", { name: /Watched and liked/ }).click();
+  await page.getByRole("link", { name: "Discover" }).click();
+  await expect(page.getByRole("heading", { name: "What do you enjoy?" })).toBeVisible();
+  await page.getByRole("button", { name: "Like →" }).click();
   await expect(page.getByText("1 choices saved")).toBeVisible();
-  await page.getByRole("button", { name: /Haven’t watched/ }).click();
+  await page.getByRole("button", { name: /Skip/ }).click();
   await expect(page.getByText("2 choices saved")).toBeVisible();
   await page.getByRole("button", { name: "Undo latest" }).click();
   await expect(page.getByText("1 choices saved")).toBeVisible();

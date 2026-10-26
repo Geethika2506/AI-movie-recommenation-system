@@ -1,12 +1,13 @@
 import json
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.models import Movie
+from backend.models import Movie, StreamingAvailability
 from backend.posters import apply_wikipedia_cache_to_metadata, wikipedia_cache_path
 
 YEAR_PATTERN = re.compile(r"\s+\((\d{4})\)$")
@@ -74,11 +75,14 @@ def import_prepared_catalog(factory: sessionmaker[Session], data_dir: Path) -> i
                         "language": details.get("language"),
                         "cast": details.get("cast", []),
                         "director": details.get("director"),
+                        "keywords": details.get("keywords", []),
+                        "vote_average": details.get("vote_average"),
                     }
                     for field, value in fields.items():
                         if getattr(movie, field) != value:
                             setattr(movie, field, value)
                             changed = True
+                    _replace_availability(session, movie.id, details)
                 updated += int(changed)
             session.commit()
             return updated
@@ -102,9 +106,44 @@ def import_prepared_catalog(factory: sessionmaker[Session], data_dir: Path) -> i
                     language=details.get("language"),
                     cast=details.get("cast", []),
                     director=details.get("director"),
+                    keywords=details.get("keywords", []),
+                    vote_average=details.get("vote_average"),
                     popularity_score=popularity.get(int(row.movie_id), 0.0),
                 )
             )
         session.add_all(records)
+        session.flush()
+        for record in records:
+            details = metadata.get(record.id, {})
+            if details:
+                _replace_availability(session, record.id, details)
         session.commit()
         return len(records)
+
+
+def _replace_availability(session: Session, movie_id: int, details: dict[str, object]) -> None:
+    if "providers" not in details:
+        return
+    session.execute(delete(StreamingAvailability).where(StreamingAvailability.movie_id == movie_id))
+    fetched_raw = details.get("fetched_at")
+    fetched_at = datetime.fromisoformat(str(fetched_raw)) if fetched_raw else datetime.now(UTC)
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=UTC)
+    providers = details.get("providers", [])
+    if not isinstance(providers, list):
+        return
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        session.add(
+            StreamingAvailability(
+                movie_id=movie_id,
+                country=str(provider["country"]).upper(),
+                provider_id=int(provider["provider_id"]),
+                provider_name=str(provider["provider_name"]),
+                access_type=str(provider["access_type"]),
+                source_url=(str(provider["source_url"]) if provider.get("source_url") else None),
+                fetched_at=fetched_at,
+                expires_at=fetched_at + timedelta(days=1),
+            )
+        )

@@ -30,17 +30,17 @@ class TMDBClient:
         ),
         reraise=True,
     )
-    def movie(self, tmdb_id: int) -> dict[str, Any] | None:
+    def _get(self, path: str, *, params: dict[str, Any] | None = None, cache_name: str | None = None) -> dict[str, Any]:
         if not self.token:
-            return None
-        cache = self.cache_dir / f"movie-{tmdb_id}.json"
-        if cache.exists() and time.time() - cache.stat().st_mtime < self.ttl_seconds:
+            raise RuntimeError("TMDB token is not configured")
+        cache = self.cache_dir / cache_name if cache_name else None
+        if cache and cache.exists() and time.time() - cache.stat().st_mtime < self.ttl_seconds:
             return json.loads(cache.read_text())
         response = httpx.get(
-            f"https://api.themoviedb.org/3/movie/{tmdb_id}",
+            f"https://api.themoviedb.org/3/{path.lstrip('/')}",
             headers={"Authorization": f"Bearer {self.token}"},
-            params={"append_to_response": "credits"},
-            timeout=5,
+            params=params or {},
+            timeout=10,
         )
         if response.status_code == 429 or response.status_code >= 500:
             retry_after = response.headers.get("retry-after")
@@ -53,5 +53,54 @@ class TMDBClient:
             )
         response.raise_for_status()
         payload: dict[str, Any] = response.json()
+        if cache:
+            cache.write_text(json.dumps(payload))
+        return payload
+
+    def movie_genre_map(self) -> dict[int, str]:
+        payload = self._get("genre/movie/list", cache_name="genre-movie-list.json")
+        return {
+            int(item["id"]): str(item["name"])
+            for item in payload.get("genres") or []
+            if item.get("id") is not None and item.get("name")
+        }
+
+    def discover_movies(
+        self,
+        *,
+        release_date_gte: str,
+        page: int = 1,
+        sort_by: str = "popularity.desc",
+    ) -> dict[str, Any]:
+        return self._get(
+            "discover/movie",
+            params={
+                "include_adult": "false",
+                "include_video": "false",
+                "sort_by": sort_by,
+                "primary_release_date.gte": release_date_gte,
+                "page": page,
+            },
+            cache_name=f"discover-{release_date_gte}-p{page}.json",
+        )
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.25, max=2),
+        retry=retry_if_exception_type(
+            (httpx.TimeoutException, httpx.NetworkError, RetryableTMDBError)
+        ),
+        reraise=True,
+    )
+    def movie(self, tmdb_id: int) -> dict[str, Any] | None:
+        if not self.token:
+            return None
+        cache = self.cache_dir / f"movie-{tmdb_id}.json"
+        if cache.exists() and time.time() - cache.stat().st_mtime < self.ttl_seconds:
+            return json.loads(cache.read_text())
+        payload = self._get(
+            f"movie/{tmdb_id}",
+            params={"append_to_response": "credits,keywords,release_dates,watch/providers"},
+        )
         cache.write_text(json.dumps(payload))
         return payload

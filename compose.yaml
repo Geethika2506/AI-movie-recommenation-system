@@ -1,27 +1,87 @@
 services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: cinematch
+      POSTGRES_USER: cinematch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cinematch}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cinematch -d cinematch"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - cinematch-postgres:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    image: redis:8-alpine
+    profiles: ["shared-cache"]
+    command: redis-server --save 60 1
+    volumes:
+      - cinematch-redis:/data
+
+  volumes-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    user: root
+    command: chown -R cinematch:cinematch /app/data /app/artifacts
+    volumes:
+      - cinematch-data:/app/data
+      - cinematch-artifacts:/app/artifacts
+
   prepare:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    command: python -m scripts.cli prepare --dataset latest-small --data-dir /app/data
+    command: >
+      sh -c "if [ -d /app/data/raw/ml-latest-small ]; then
+      python -m scripts.cli prepare --dataset latest-small --data-dir /app/data
+      --source /app/data/raw/ml-latest-small;
+      else python -m scripts.cli prepare --dataset latest-small --data-dir /app/data;
+      fi"
     volumes:
       - cinematch-data:/app/data
+    depends_on:
+      volumes-init:
+        condition: service_completed_successfully
 
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
     environment:
-      CINEMATCH_DATABASE_URL: sqlite:////app/data/cinematch.db
+      CINEMATCH_DATABASE_URL: postgresql+psycopg://cinematch:${POSTGRES_PASSWORD:-cinematch}@db:5432/cinematch
       CINEMATCH_DATA_DIR: /app/data
       CINEMATCH_ARTIFACT_DIR: /app/artifacts
       CINEMATCH_CORS_ORIGINS: http://localhost:5173
       CINEMATCH_READ_ONLY: ${CINEMATCH_READ_ONLY:-false}
       CINEMATCH_LOG_LEVEL: ${CINEMATCH_LOG_LEVEL:-INFO}
       CINEMATCH_TMDB_TOKEN: ${CINEMATCH_TMDB_TOKEN:-}
+      CINEMATCH_JWT_SECRET: ${CINEMATCH_JWT_SECRET:-development-only-change-me-32-bytes}
+      CINEMATCH_REDIS_URL: ${CINEMATCH_REDIS_URL:-}
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn backend.app:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     depends_on:
+      db:
+        condition: service_healthy
       prepare:
         condition: service_completed_successfully
     volumes:
@@ -36,11 +96,14 @@ services:
       args:
         VITE_API_URL: http://localhost:8000/api
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "5173:80"
     restart: unless-stopped
 
 volumes:
+  cinematch-postgres:
+  cinematch-redis:
   cinematch-data:
   cinematch-artifacts:

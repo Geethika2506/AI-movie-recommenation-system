@@ -1,14 +1,39 @@
+import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="CINEMATCH_", env_file=".env", extra="ignore")
+def _psycopg_sqlalchemy_url(url: str) -> str:
+    if url.startswith("postgresql+psycopg://"):
+        return url
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+psycopg://", 1)
+    return url
 
-    database_url: str = "sqlite:///./data/cinematch.db"
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="CINEMATCH_",
+        env_file=(".env", ".env.local"),
+        extra="ignore",
+    )
+
+    database_url: str = "postgresql+psycopg://cinematch:cinematch@localhost:5432/cinematch"
+    database_migration_url: str | None = None
+    neon_pooled_database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL"),
+    )
+    neon_direct_database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL_UNPOOLED"),
+    )
     data_dir: Path = Path("data")
     artifact_dir: Path = Path("artifacts")
     # Comma-separated in .env (not JSON); list[str] triggers JSON parsing.
@@ -20,6 +45,22 @@ class Settings(BaseSettings):
     poster_lookup: bool = True
     public_app_url: str = "http://localhost:5173"
     auto_create_schema: bool = False
+    jwt_secret: str = "development-only-change-me-32-bytes"
+    access_token_minutes: int = 15
+    refresh_token_days: int = 30
+    secure_cookies: bool = False
+    bandit_enabled: bool = False
+    bandit_shadow: bool = True
+    bandit_epsilon: float = 0.1
+    rate_limit_per_minute: int = 120
+    auth_rate_limit_per_minute: int = 20
+    redis_url: str | None = None
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_tls: bool = True
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -32,6 +73,19 @@ class Settings(BaseSettings):
 
     def cors_origin_list(self) -> list[str]:
         return [part.strip() for part in self.cors_origins.split(",") if part.strip()]
+
+    @model_validator(mode="after")
+    def apply_neon_database_urls(self) -> Self:
+        explicit = os.environ.get("CINEMATCH_DATABASE_URL")
+        pooled = self.neon_pooled_database_url
+        direct = self.neon_direct_database_url
+        if pooled and (not explicit or explicit.startswith("sqlite")):
+            self.database_url = _psycopg_sqlalchemy_url(pooled)
+        if direct:
+            self.database_migration_url = _psycopg_sqlalchemy_url(direct)
+        elif self.database_migration_url is None:
+            self.database_migration_url = self.database_url
+        return self
 
 
 @lru_cache

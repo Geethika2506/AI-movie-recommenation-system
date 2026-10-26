@@ -1,5 +1,26 @@
 # API guide
 
+The generated OpenAPI document at `/docs` is authoritative. All account and recommendation writes
+use `Authorization: Bearer <access-token>`; the refresh token is a secure HttpOnly cookie.
+
+## Current platform endpoints
+
+- `POST /api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout`
+- `GET/PATCH/DELETE /api/users/me`
+- `POST /api/users/me/claim-legacy-profile`
+- `GET /api/recommendations/personal`
+- `GET /api/users/me/preferences`, `/api/users/me/wishlist`
+- `POST /api/users/me/recommendations/reset`
+- `POST /api/groups`, `POST /api/groups/{id}/invites`, `POST /api/group-invites/{token}/join`
+- `POST/GET /api/groups/{id}/sessions`
+- `POST /api/sessions/{id}/votes`, `GET /api/sessions/{id}/recommendations`
+- `POST /api/sessions/{id}/finalize`, `POST /api/sessions/{id}/satisfaction`
+- `WS /api/sessions/{id}/ws`
+- `GET /api/health/models`
+
+Recommendation rows include request/impression IDs and model, feature, and policy versions.
+Recommendation-driven feedback must return those IDs; the API rejects mismatched attribution.
+
 The FastAPI application is served at `http://localhost:8000`; application routes use the `/api`
 prefix. The generated OpenAPI document at `/openapi.json` and interactive UI at `/docs` are the
 authoritative contract for the checked-out version.

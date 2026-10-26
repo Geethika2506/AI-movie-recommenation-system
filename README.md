@@ -1,8 +1,8 @@
 # CineMatch
 
-CineMatch is a local-first movie recommendation portfolio project. It combines a FastAPI API,
-a React/Vite interface, SQLite, and a Python recommender package containing popularity, content,
-PyTorch explicit matrix-factorization, and hybrid recommenders.
+CineMatch is an end-to-end movie discovery platform. It combines a FastAPI API, React/Vite UI,
+PostgreSQL/pgvector, JWT accounts, Sentence Transformer content embeddings, implicit ALS,
+diversity-aware hybrid ranking, Vowpal Wabbit contextual bandits, and fair group sessions.
 
 The project defaults to GroupLens MovieLens `latest-small`. MovieLens 32M can be selected for a
 larger experiment, and TMDB enrichment is optional. Core recommendation flows do not require a
@@ -18,9 +18,11 @@ Prerequisites:
 - Python 3.11
 - [uv](https://docs.astral.sh/uv/)
 - Node.js 20+ and npm
+- PostgreSQL 17 with pgvector, or Docker Desktop
 
 ```bash
 cp .env.example .env
+docker compose up -d db
 uv sync --python 3.11
 uv run --python 3.11 python -m scripts.cli prepare --dataset latest-small
 uv run --python 3.11 alembic upgrade head
@@ -62,8 +64,15 @@ Optional TMDB enrichment is resumable and is skipped safely without credentials:
 ```bash
 export CINEMATCH_TMDB_TOKEN="your-read-access-token"
 uv run --python 3.11 python -m scripts.cli enrich
-# Restart the backend so the cached JSONL metadata is synchronized into SQLite.
+# Restart the backend so cached metadata is synchronized into PostgreSQL.
 uv run --python 3.11 uvicorn backend.app:app --reload
+```
+
+To pull **popular recent releases** (not in MovieLens) into the catalog:
+
+```bash
+uv run python -m scripts.cli import-tmdb-discover --years 3 --limit 500
+uv run python -m scripts.cli embed --force
 ```
 
 `CINEMATCH_TMDB_TOKEN` must be a TMDB API Read Access Token. It is used only by the Python
@@ -90,10 +99,10 @@ uv run --python 3.11 python -m scripts.cli train \
 
 Inspect all supported options with `uv run --python 3.11 python -m scripts.cli --help`.
 
-## Zero-cost local deployment
+## Local Docker deployment
 
-Docker Compose runs the API and frontend and keeps the SQLite database and model artifacts in named
-volumes:
+Docker Compose runs PostgreSQL/pgvector, the API, migrations, catalog preparation, and the frontend
+with persistent database and model volumes:
 
 ```bash
 cp .env.example .env
@@ -118,24 +127,25 @@ writes are disabled in that mode.
 
 ## How recommendations flow
 
-1. MovieLens ratings, movie titles, and genres are ingested into SQLite.
+1. Licensed MovieLens titles/genres and ratings are ingested with provenance into PostgreSQL.
 2. The popularity baseline supplies robust defaults for unknown or new users.
-3. Content similarity uses movie metadata to find related titles.
-4. Explicit matrix factorization learns user and item embeddings from ratings with PyTorch.
-5. The hybrid layer combines available signals, filters already-rated titles, and returns reasons
-   and scores through FastAPI.
-6. The React client captures ratings and renders recommendations.
+3. Sentence Transformer embeddings use only ML-eligible title/genre text and are stored in pgvector.
+4. Implicit ALS learns confidence-weighted collaborative signals in isolated user namespaces.
+5. Hybrid/MMR ranking combines content, collaborative, popularity, novelty, and safe exploration.
+6. Optional VW ADF selects the next eligible movie with logged propensities and exact attribution.
+7. Group sessions union every member's candidates and optimize mean/minimum satisfaction fairly.
 
 ### Swipe feedback
 
-The **Discover** screen keeps four meanings separate:
+The **Discover** screen keeps meanings separate:
 
-- right / “Watched and liked”: watched + explicit positive signal;
-- left / “Watched and disliked”: watched + explicit negative signal;
-- “Haven’t watched / Skip”: temporary history only, not a dislike;
-- “Add to watchlist”: unwatched, weak interest signal.
+- right / Like and left / Dislike are explicit preference signals;
+- Love is a stronger positive preference;
+- Watched changes history only and does not imply enjoyment;
+- Skip creates no negative label;
+- Wishlist is intent to watch, not proof of enjoyment.
 
-Updates are idempotent, owned by a browser session key, and recorded with previous/new snapshots.
+Updates are idempotent, owned by JWT-authenticated accounts, and recorded with previous/new snapshots.
 Undo restores only the latest persisted action. Watched movies are excluded. Explicit states
 update the genre profile without retraining the global model; recommendation and group profile
 versions are incremented to invalidate dependent results. Existing numeric ratings remain intact:
@@ -156,14 +166,15 @@ the implementation uses normalized sparse TF-IDF vectors and CPU `state_dict` lo
 
 ### Invitations and group ranking
 
-Groups contain profiles owned by separate browser sessions. An owner or member can generate an
+Groups contain profiles owned by separate accounts. An owner or member can generate an
 unguessable 256-bit invitation token that expires after 48 hours; owners can revoke invites.
 Duplicate joins are idempotent, members can leave, owners can remove members, and group responses
 only expose member names/onboarding counts—not ratings or swipe states.
 
-Each member scores the same constrained candidate pool. Scores are min-max normalized to `[0,1]`
-per member so larger histories cannot dominate. Let `avg` be mean normalized enjoyment and `min`
-the least-satisfied member:
+Each consenting member contributes candidates before shared availability constraints. Scores are
+normalized per member so larger histories cannot dominate. Active movie-night sessions keep votes
+separate from personal history, support vetoes and live WebSocket updates, and use configurable
+average, least-misery, fair-consensus, or Nash ranking.
 
 - **Balanced:** `0.75 × avg + 0.25 × min`
 - **Everyone matters:** `0.25 × avg + 0.75 × min`
@@ -195,11 +206,16 @@ artifacts derived from it, or a hosted service. Optional metadata may come from
 subject to the [TMDB API terms](https://www.themoviedb.org/documentation/api/terms-of-use).
 
 More detail: [data provenance and terms](docs/data.md).
+The stricter ML eligibility matrix is in [data rights](docs/data-rights.md), and versioned event,
+feature, reward, and promotion rules are in [ML contracts](docs/ml-contracts.md).
 
 ## Documentation
 
 - [Architecture and recommendation flow](docs/architecture.md)
 - [Data provenance and licenses](docs/data.md)
+- [Data rights and ML eligibility](docs/data-rights.md)
+- [ML event and feature contracts](docs/ml-contracts.md)
+- [Training, evaluation, and model operations](docs/training.md)
 - [Recommender model card](docs/recommender-model-card.md)
 - [API guide](docs/api.md)
 - [Deployment guide](docs/deployment.md)

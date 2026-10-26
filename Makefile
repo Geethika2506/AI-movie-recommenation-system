@@ -1,4 +1,4 @@
-.PHONY: install prepare train evaluate migrate dev dev-backend dev-frontend demo-read-only test e2e check build compose-up compose-down clean
+.PHONY: install prepare embed train train-collaborative evaluate migrate dev dev-backend dev-frontend demo-read-only test e2e check build compose-up compose-down clean
 
 PYTHON := 3.11
 UV_RUN := uv run --python $(PYTHON)
@@ -10,8 +10,14 @@ install:
 prepare:
 	$(UV_RUN) python -m scripts.cli prepare --dataset latest-small
 
+embed:
+	$(UV_RUN) python -m scripts.cli embed
+
 train:
 	$(UV_RUN) python -m scripts.cli train
+
+train-collaborative:
+	$(UV_RUN) python -m scripts.cli train-collaborative
 
 evaluate:
 	$(UV_RUN) python -m scripts.cli evaluate

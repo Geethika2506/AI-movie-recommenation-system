@@ -42,6 +42,18 @@ Follow current attribution, image, caching, and branding requirements. Include t
 Never commit a TMDB token. Core ingestion, training, evaluation, and recommendations must remain
 usable without TMDB.
 
+To add **recent releases** that are not in MovieLens, run TMDB discover import after the catalog
+exists in PostgreSQL/SQLite:
+
+```bash
+export CINEMATCH_TMDB_TOKEN="your-read-access-token"
+uv run python -m scripts.cli import-tmdb-discover --years 3 --limit 500
+uv run python -m scripts.cli embed --force
+```
+
+Imported rows use TMDB metadata for display. Embeddings continue to use stored title/genre text
+only. TMDB attribution remains required in the UI.
+
 Run `uv run --python 3.11 python -m scripts.cli enrich` after preparation. The command reads
 `links.csv`, requests movie details plus credits with timeouts/retries, caches responses, and
 appends completed records to `data/processed/latest-small/tmdb.jsonl`. Existing movie IDs are
