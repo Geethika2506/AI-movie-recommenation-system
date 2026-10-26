@@ -842,15 +842,11 @@ function Group(props: SharedProps) {
       props.flash(reason instanceof Error ? reason.message : "Couldn’t start session");
     }
   };
-  const vote = async (movie: Movie, action: "like" | "love" | "dislike" | "veto") => {
+  const castLegacyVote = async (movie: Movie, action: "like" | "love" | "dislike" | "veto") => {
     if (!legacySession || !props.activeProfile) return;
-    try {
-      await api.groupVote(legacySession.id, props.activeProfile.id, movie.id, action);
-      refreshGroupData();
-      props.flash("Group vote saved");
-    } catch (reason) {
-      props.flash(reason instanceof Error ? reason.message : "Couldn’t save vote");
-    }
+    await api.groupVote(legacySession.id, props.activeProfile.id, movie.id, action);
+    refreshGroupData();
+    props.flash("Group vote saved");
   };
   return (
     <Page eyebrow="Movie night" title="Find a film everyone can enjoy" intro="Each invitation link opens its own room. People who join a different person’s link show up in that room, with their own movie night.">
@@ -862,7 +858,14 @@ function Group(props: SharedProps) {
           <label className="strategy-row card"><span><strong>Ranking strategy</strong><small>Balanced emphasizes average enjoyment; Everyone matters emphasizes the least-satisfied member.</small></span><select value={strategy} onChange={(event) => setStrategy(event.target.value as typeof strategy)}><option value="balanced">Balanced</option><option value="everyone_matters">Everyone matters</option></select></label>
           <label className="switch-row card"><span><strong>Include already watched movies</strong><small>Off by default so nobody gets a repeat.</small></span><input type="checkbox" role="switch" checked={includeWatched} onChange={(event) => setIncludeWatched(event.target.checked)} /></label>
           {roomState.loading ? <Skeleton count={2} /> : roomState.error ? <ErrorState message={roomState.error} /> : rooms.length > 0 ? <div className="room-list">{selected?.ownerProfileId === props.activeProfile?.id && <p className="compromise-note">You own this group, so every room is listed. Friends only see the room for the link they opened.</p>}{rooms.map((room) => <RoomPanel key={room.id} room={room} groupOwnerProfileId={selected?.ownerProfileId} session={(sessionListState.data ?? []).find((session) => session.status === "active" && session.roomId === room.id)} strategy={strategy} includeWatched={includeWatched} highlighted={room.id === highlightedRoomId} onStart={startRoom} onChanged={refreshGroupData} {...props} />)}</div> : selected && selected.members.length < 2 ? <Empty title="Waiting for a room" text="Create a room link. Anyone who opens a different person’s link joins a different room." /> : null}
-          {legacySession && <section className="card group-session-panel"><p className="eyebrow">Live group session</p><h2>Consensus feed</h2><p>Every participant has one vote. A veto removes that movie from this session only.</p>{sessionMovieState.loading ? <Skeleton count={1} /> : sessionMovieState.data?.[0] && <><MovieCard movie={sessionMovieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(sessionMovieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(sessionMovieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(sessionMovieState.data![0], "like")}>Like</button></div></>}</section>}
+          {legacySession && <section className="card group-session-panel"><p className="eyebrow">Live group session</p><h2>Consensus feed</h2><p>Every participant has one vote. A veto removes that movie from this session only.</p><GroupSessionVotePanel sessionId={legacySession.id} movies={sessionMovieState.data} loading={sessionMovieState.loading} error={sessionMovieState.error} onVote={async (movie, action) => {
+            try {
+              await castLegacyVote(movie, action);
+            } catch (reason) {
+              props.flash(reason instanceof Error ? reason.message : "Couldn’t save vote");
+              throw reason;
+            }
+          }} /></section>}
           {showSharedList && selected && selected.members.length >= 2 && <><p className="compromise-note">Group scores are estimates. Conflicts are labeled “Best available compromise”; no result promises everyone will like it.</p><AsyncMovies loading={loading} error={error} movies={data} {...props} /></>}
         </>}
       </>}
@@ -958,15 +961,12 @@ function RoomPanel({
       setUpdatingMode(false);
     }
   };
-  const vote = async (movie: Movie, action: "like" | "love" | "dislike" | "veto") => {
+  const castRoomVote = async (movie: Movie, action: "like" | "love" | "dislike" | "veto") => {
     if (!session || !props.activeProfile) return;
-    try {
-      await api.groupVote(session.id, props.activeProfile.id, movie.id, action);
-      onChanged();
-      props.flash("Group vote saved");
-    } catch (reason) {
-      props.flash(reason instanceof Error ? reason.message : "Couldn’t save vote");
-    }
+    await api.groupVote(session.id, props.activeProfile.id, movie.id, action);
+    void queryClient.invalidateQueries({ queryKey: ["session-recommendations", session.id] });
+    onChanged();
+    props.flash("Group vote saved");
   };
   const copyRoomLink = async () => {
     if (!props.activeProfile) return;
@@ -1038,7 +1038,14 @@ function RoomPanel({
       />}
       {!isHost && inRoom && !activeSession && <p className="compromise-note">Waiting for {room.hostName} to choose a recommendation mode and start movie night.</p>}
       {!inRoom && <p>You can see this room because you own the group.</p>}
-      {participating && session && <div className="group-session-panel"><h3>{groupModeTitle(session.rankingAlgorithm)} consensus feed</h3><p>Mode: <strong>{groupModeTitle(session.rankingAlgorithm)}</strong>. Every participant has one vote; a veto removes that movie from this room only.</p>{movieState.loading ? <Skeleton count={1} /> : movieState.data?.[0] && <><MovieCard movie={movieState.data[0]} {...props} /><div className="swipe-actions"><button className="button dislike-button" onClick={() => vote(movieState.data![0], "dislike")}>Dislike</button><button className="button" onClick={() => vote(movieState.data![0], "veto")}>Veto</button><button className="button" onClick={() => vote(movieState.data![0], "love")}>Love</button><button className="button like-button" onClick={() => vote(movieState.data![0], "like")}>Like</button></div></>}</div>}
+      {participating && session && <div className="group-session-panel"><h3>{groupModeTitle(session.rankingAlgorithm)} consensus feed</h3><p>Mode: <strong>{groupModeTitle(session.rankingAlgorithm)}</strong>. Every participant has one vote; a veto removes that movie from this room only.</p><GroupSessionVotePanel sessionId={session.id} movies={movieState.data} loading={movieState.loading} error={movieState.error} onVote={async (movie, action) => {
+        try {
+          await castRoomVote(movie, action);
+        } catch (reason) {
+          props.flash(reason instanceof Error ? reason.message : "Couldn’t save vote");
+          throw reason;
+        }
+      }} /></div>}
       {room.members.length < 2 ? <p className="compromise-note">Waiting for someone to open this link.</p> : <><p className="compromise-note">Scores in this room use only these members.</p><AsyncMovies loading={ranked.loading} error={ranked.error} movies={ranked.data} {...props} /></>}
     </article>
   );
@@ -1230,6 +1237,67 @@ function SettingsView({ setReadOnly, user, setUser, logout, bumpFeed }: { setRea
       </section>
       {message && <p role="status">{message}</p>}
     </Page>
+  );
+}
+
+function GroupSessionVotePanel({
+  sessionId,
+  movies,
+  loading,
+  error,
+  onVote,
+}: {
+  sessionId: string;
+  movies?: Movie[];
+  loading: boolean;
+  error: string;
+  onVote: (movie: Movie, action: "like" | "love" | "dislike" | "veto") => Promise<void>;
+}) {
+  const [dismissed, setDismissed] = useState<Set<number>>(() => new Set());
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    setDismissed(new Set());
+  }, [sessionId]);
+  const current = movies?.find((movie) => !dismissed.has(movie.id));
+  const vote = async (action: "like" | "love" | "dislike" | "veto") => {
+    if (!current || pending) return;
+    setPending(true);
+    try {
+      await onVote(current, action);
+      setDismissed((previous) => new Set(previous).add(current.id));
+    } finally {
+      setPending(false);
+    }
+  };
+  if (loading && !movies?.length) return <Skeleton count={1} />;
+  if (error) return <ErrorState message={error} />;
+  if (!current) {
+    return (
+      <p className="compromise-note">
+        {movies?.length
+          ? "You’ve voted on every title in this round. Scroll the room list below or wait for others to weigh in."
+          : "No group picks yet — start movie night when the room is ready."}
+      </p>
+    );
+  }
+  return (
+    <>
+      <article className="group-session-card">
+        <Poster movie={current} />
+        <div>
+          <p className="movie-genres">{(current.genres ?? []).join(" · ")}</p>
+          <h3>{current.title}{current.year ? ` (${current.year})` : ""}</h3>
+          {current.score > 0 && <p className="group-score">{current.score}% group fit</p>}
+          {current.reason && <small>{current.reason}</small>}
+        </div>
+      </article>
+      <div className="swipe-actions">
+        <button className="button dislike-button" disabled={pending} onClick={() => vote("dislike")}>Dislike</button>
+        <button className="button" disabled={pending} onClick={() => vote("veto")}>Veto</button>
+        <button className="button" disabled={pending} onClick={() => vote("love")}>Love</button>
+        <button className="button like-button" disabled={pending} onClick={() => vote("like")}>Like</button>
+      </div>
+    </>
   );
 }
 

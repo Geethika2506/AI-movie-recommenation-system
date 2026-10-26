@@ -127,6 +127,26 @@ select, input { color: #f7f4eb; background: var(--surface-2); border: 1px solid 
 .swipe-label { position: absolute; top: 1rem; z-index: 2; padding: .5rem .7rem; border: 3px solid; border-radius: .45rem; text-transform: uppercase; background: #111d; transform: rotate(-4deg); }
 .swipe-label.like { right: 1rem; color: #8fe1a0; }
 .swipe-label.dislike { left: 1rem; color: var(--danger); transform: rotate(4deg); }
+.group-session-panel { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.group-session-card {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) 1fr;
+  gap: 1rem;
+  align-items: start;
+  max-width: 34rem;
+  margin: 1rem 0 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: .85rem;
+  background: var(--surface);
+}
+.group-session-card .poster { width: 100%; }
+.group-session-card .poster-fallback span { font-size: 1.75rem; }
+.group-session-card h3 { font: 700 1.1rem/1.2 "Playfair Display", serif; margin: 0 0 .35rem; }
+.group-session-card .movie-genres { font-size: .72rem; color: var(--muted); margin: 0 0 .25rem; }
+.group-session-card .group-score { color: #a9e0a9; font-weight: 700; font-size: .78rem; }
+.group-session-card small { display: block; color: var(--muted); font-size: .78rem; line-height: 1.45; margin-top: .45rem; }
+.group-session-panel .swipe-actions { max-width: 34rem; grid-template-columns: repeat(4, 1fr); }
 .swipe-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: .65rem; margin-top: 1rem; }
 .swipe-actions kbd { margin-left: .4rem; color: var(--muted); }
 .like-button { border-color: #477d51; }
@@ -255,6 +275,8 @@ footer p { margin-right: auto; }
   .swipe-card { grid-template-columns: 1fr; }
   .swipe-card .poster { width: min(100%, 280px); margin: auto; border-radius: .8rem; }
   .swipe-actions { grid-template-columns: 1fr; }
+  .group-session-panel .swipe-actions { grid-template-columns: repeat(2, 1fr); }
+  .group-session-card { grid-template-columns: 120px 1fr; max-width: 100%; }
   .taste-progress { grid-template-columns: 1fr auto; }
   .taste-progress progress { grid-row: 2; grid-column: 1/-1; }
   footer { flex-wrap: wrap; }

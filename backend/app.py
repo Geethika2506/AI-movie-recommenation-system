@@ -1657,9 +1657,21 @@ def _register_routes(app: FastAPI, factory: sessionmaker[Session], settings: Set
                 for row in rank_group_session(db, group_session, limit=max(80, limit))
             ],
         )
+        voted_by_requester = {
+            vote.movie_id
+            for vote in db.scalars(
+                select(GroupVote).where(
+                    GroupVote.session_id == session_id,
+                    GroupVote.profile_id == profile.id,
+                )
+            )
+        }
+        pending_rows = [row for row in ranked_rows if row[0].id not in voted_by_requester]
+        completed_rows = [row for row in ranked_rows if row[0].id in voted_by_requester]
+        ordered_rows = pending_rows + completed_rows
         request_id = str(uuid.uuid4())
         impression_id = str(uuid.uuid4())
-        displayed = ranked_rows[:limit]
+        displayed = ordered_rows[:limit]
         db.add(
             RecommendationImpression(
                 request_id=request_id,

@@ -70,6 +70,25 @@ def test_group_session_votes_consensus_and_personal_isolation(tmp_path: Path) ->
         )
         assert recommendations.status_code == 200
         movie_id = recommendations.json()[0]["movie"]["id"]
+        alice_vote = client.post(
+            f"/api/sessions/{session_id}/votes",
+            headers=A,
+            json={
+                "profile_id": alice,
+                "movie_id": movie_id,
+                "action": "like",
+                "request_id": "group-vote-alice-solo",
+            },
+        )
+        assert alice_vote.status_code == 200
+        after_vote = client.get(
+            f"/api/sessions/{session_id}/recommendations",
+            headers=A,
+            params={"profile_id": alice},
+        )
+        assert after_vote.status_code == 200
+        assert after_vote.json()
+        assert after_vote.json()[0]["movie"]["id"] != movie_id
         before = client.get(f"/api/profiles/{alice}/recommendations", headers=A).json()
         for profile_id, headers, suffix in ((alice, A, "alice"), (bob, B, "bob")):
             vote = client.post(
