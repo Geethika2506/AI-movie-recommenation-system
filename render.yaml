@@ -42,6 +42,19 @@ services:
         value: "true"
       - key: CINEMATCH_LOG_LEVEL
         value: INFO
+      # Keep RAM down on the 512MB free tier (PyTorch/implicit baseline is heavy).
+      - key: CINEMATCH_POSTER_LIVE_FETCH
+        value: "false"
+      - key: CINEMATCH_POSTER_LOOKUP
+        value: "false"
+      - key: CINEMATCH_BANDIT_ENABLED
+        value: "false"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: MKL_NUM_THREADS
+        value: "1"
       - key: CINEMATCH_JWT_SECRET
         generateValue: true
       - key: CINEMATCH_TMDB_TOKEN

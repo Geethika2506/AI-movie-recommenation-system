@@ -28,7 +28,7 @@ Production runs on **Render** (compute + CDN static frontend) with **Neon** as t
 | **Health** | [https://ai-movie-recommenation-system.onrender.com/health](https://ai-movie-recommenation-system.onrender.com/health) |
 | **Readiness (DB)** | [https://ai-movie-recommenation-system.onrender.com/ready](https://ai-movie-recommenation-system.onrender.com/ready) |
 
-The frontend build embeds `VITE_API_URL=https://ai-movie-recommenation-system.onrender.com/api` (see `render.yaml`). CORS and invite links use `https://cinematch-frontend-nif7.onrender.com`.
+The **static site** build on Render embeds `VITE_API_URL=https://ai-movie-recommenation-system.onrender.com/api` (set in the static site’s environment at build time; it is not in [`render.yaml`](render.yaml), which only defines the Docker API service). For the split layout below, CORS and invite links on the API must use the static site origin: `https://cinematch-frontend-nif7.onrender.com`.
 
 ### Platforms
 
@@ -39,13 +39,35 @@ The frontend build embeds `VITE_API_URL=https://ai-movie-recommenation-system.on
 
 **Neon wiring in this repo:** `backend/config.py` maps `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED` (direct, for Alembic). [`neon.ts`](neon.ts) configures branch TTL for dev branches; app auth is JWT in the API, not Neon Auth.
 
-**Render wiring in this repo:** [`render.yaml`](render.yaml) defines service names, regions (Frankfurt), env vars, and health check path `/health`. Free-tier services may **sleep after inactivity**; the first request after sleep can take tens of seconds.
+**Render wiring in this repo:** [`render.yaml`](render.yaml) defines the Docker **API** web service (Frankfurt, free plan), health check `/health`, optional Blueprint Postgres fallback, and production env defaults (posters off, bandit off, BLAS thread limits for the 512 MB free tier). The **static frontend** is a separate Render static site you configure in the dashboard. Free-tier services may **sleep after inactivity**; the first request after sleep can take tens of seconds.
+
+### Demo video
+
+Walkthrough of the hosted app (onboarding, recommendations, group movie night). Script: [docs/demo-script.md](docs/demo-script.md).
+
+GitHub **does not** play `<video src="docs/...">` from the repository (those tags are stripped or show “not supported”). Use the **Watch** link below, or embed once via GitHub’s asset host (step 2).
+
+1. **Watch (works after you push)** — H.264 copy for browsers (~3.4 MB):
+
+[![Watch the CineMatch demo](docs/cinematch-demo-poster.jpg)](https://github.com/Geethika2506/AI-movie-recommenation-system/raw/main/docs/cinematch-demo.web.mp4)
+
+2. **Optional inline player in this README** — on github.com, edit this file, drag [`docs/cinematch-demo.web.mp4`](docs/cinematch-demo.web.mp4) into the editor (under **10 MB** on free GitHub), copy the `github.com/user-attachments/assets/…` or `user-images.githubusercontent.com/…` URL GitHub inserts, and add:
+
+```html
+<video src="PASTE_URL_FROM_GITHUB_UPLOAD" controls width="100%"></video>
+```
+
+Source screen recording (HEVC, ~213 MB) can stay local as `docs/cinematch-demo.mp4`; it is gitignored so clones stay small. Re-encode the web copy with:
+
+```bash
+ffmpeg -i docs/cinematch-demo.mp4 -vf "scale=720:-2" -c:v libx264 -crf 32 -c:a aac -b:a 64k -movflags +faststart docs/cinematch-demo.web.mp4
+```
 
 ---
 
 ## Table of contents
 
-- [Live deployment](#live-deployment)
+- [Live deployment](#live-deployment) ([demo video](#demo-video))
 - [What the app is](#what-the-app-is)
 - [Host movie night modes](#host-movie-night-modes)
 - [A session, start to finish](#a-session-start-to-finish)
@@ -56,7 +78,7 @@ The frontend build embeds `VITE_API_URL=https://ai-movie-recommenation-system.on
 - [Data, licenses, and what may train a model](#data-licenses-and-what-may-train-a-model)
 - [Run it locally](#run-it-locally)
 - [Docker Compose](#docker-compose)
-- [Deploy: Render for the app, Neon for the database](#deploy-render-for-the-app-neon-for-the-database)
+- [Deploy: Render for the app, Neon for the database](#deploy-render-for-the-app-neon-for-the-database) (includes [blueprint env defaults](#blueprint-env-defaults-renderyaml))
 - [Offline results](#offline-results)
 - [API surface](#api-surface)
 - [Verification](#verification)
@@ -282,13 +304,15 @@ Neon Auth, Neon Functions, and Neon Object Storage are **not** used. Accounts, f
 | `DATABASE_URL` | Neon **pooled** connection. The API uses this when `CINEMATCH_DATABASE_URL` is unset. |
 | `DATABASE_URL_UNPOOLED` | Neon **direct** connection. Alembic uses this so migrations are not sent through the pooler. |
 | `CINEMATCH_DATABASE_URL` | Explicit override. Wins over the Neon pooled URL. Compose sets this to the local Postgres service. |
-| `CINEMATCH_CORS_ORIGINS` | Browser origins allowed to call the API. Must be the Render static site origin in production. |
-| `CINEMATCH_PUBLIC_APP_URL` | Public site URL used in invite links. |
+| `CINEMATCH_CORS_ORIGINS` | Browser origins allowed to call the API. **Split layout:** the static site origin (e.g. `https://cinematch-frontend-nif7.onrender.com`). **Same-origin:** the API origin if `frontend/dist` is served from the Docker web service. |
+| `CINEMATCH_PUBLIC_APP_URL` | Public site URL used in invite links. Match the URL users open in the browser (usually the static site in production). |
 | `CINEMATCH_JWT_SECRET` | At least 32 random bytes. Generated in the Render blueprint. |
 | `CINEMATCH_SECURE_COOKIES` | `true` on Render so the refresh cookie is HTTPS-only. |
-| `CINEMATCH_POSTER_LIVE_FETCH` | Set `false` on Render. The disk is ephemeral and live poster HTTP on every page is slow. |
+| `CINEMATCH_POSTER_LIVE_FETCH` | Set `false` on Render. Avoids slow Wikipedia/TMDB HTTP on each page; ephemeral disk cannot hold a durable poster cache. |
+| `CINEMATCH_POSTER_LOOKUP` | Set `false` on Render. Skips the startup background job that scans the catalog for missing posters (saves RAM and outbound HTTP). Posters already stored on `Movie.poster_path` in Neon still display. |
 | `CINEMATCH_TMDB_TOKEN` | Optional. Never baked into the image. |
-| `CINEMATCH_BANDIT_ENABLED` / `CINEMATCH_BANDIT_SHADOW` | Bandit off unless enabled. Shadow stays on until a promotion decision. |
+| `CINEMATCH_BANDIT_ENABLED` / `CINEMATCH_BANDIT_SHADOW` | Bandit off unless enabled (`false` in [`render.yaml`](render.yaml)). Shadow stays on until a promotion decision. |
+| `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` | Set to `1` on Render free tier so NumPy/SciPy do not spawn extra threads inside a 512 MB container ([`render.yaml`](render.yaml)). |
 | `VITE_API_URL` | Baked into the static build. Production value is the Render API origin plus `/api`. |
 
 The settings layer rewrites Neon URLs for psycopg: it forces `sslmode=require` and strips `channel_binding`, which the Neon pooler string sometimes includes.
@@ -707,12 +731,25 @@ Create the `vector` extension on the Neon branch once. Alembic’s embedding mig
 ### Render behavior you should plan for
 
 - Free web services spin down after about 15 minutes idle. The first request after sleep is slow.
+- Free web services have about **512 MB RAM**. The Docker image includes PyTorch, `implicit`, and SciPy even though serving mostly uses embeddings from Neon and NumPy paths. After boot, memory metrics often sit **high but stable**; that is normal if `/health` stays up and logs show no `OOM` / `Killed`. For comfortable headroom, upgrade the web service plan or slim the production image (future work). [`render.yaml`](render.yaml) already sets poster/bandit flags off and `OMP_NUM_THREADS=1` (and related vars) to reduce baseline use.
 - The container filesystem is ephemeral. `/app/data` and `/app/artifacts` are empty after a new deploy. Movie rows and taste vectors survive because they are in Neon. ALS, MF, and VW files do not, unless you attach a [Render persistent disk](https://render.com/docs/disks) (single instance) or retrain after boot.
-- Set `CINEMATCH_POSTER_LIVE_FETCH=false` so a cold start does not call Wikipedia or TMDB for every poster.
-- Set `CINEMATCH_CORS_ORIGINS` and `CINEMATCH_PUBLIC_APP_URL` to the static site origin, and `CINEMATCH_SECURE_COOKIES=true`.
+- **Posters on Render:** set `CINEMATCH_POSTER_LIVE_FETCH=false` and `CINEMATCH_POSTER_LOOKUP=false` (both defaulted in [`render.yaml`](render.yaml)).
+- **CORS and invites:** for the split production layout ([static site](#urls-production) + API), set `CINEMATCH_CORS_ORIGINS` and `CINEMATCH_PUBLIC_APP_URL` to the **static site** origin on the API service (dashboard overrides beat a blueprint that still points at the API hostname). Set `CINEMATCH_SECURE_COOKIES=true`.
 - Keep `CINEMATCH_TMDB_TOKEN` and `CINEMATCH_JWT_SECRET` in Render’s secret store. The blueprint generates the JWT secret and leaves the TMDB token for you to paste (`sync: false`).
 - One application per service. The API and the site are separate Render services on purpose.
 - Train offline. Do not run `train` or `embed` inside the web service request path.
+
+### Blueprint env defaults (`render.yaml`)
+
+The checked-in blueprint sets these on the API web service (override in the dashboard when production URLs differ):
+
+| Variable | Blueprint value | Why |
+|----------|-----------------|-----|
+| `CINEMATCH_POSTER_LIVE_FETCH` | `false` | No live poster HTTP on ephemeral disk |
+| `CINEMATCH_POSTER_LOOKUP` | `false` | No startup catalog poster backfill |
+| `CINEMATCH_BANDIT_ENABLED` | `false` | Avoid loading VW at boot without artifacts |
+| `OMP_NUM_THREADS` / `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS` | `1` | Limit BLAS threading in small containers |
+| `CINEMATCH_CORS_ORIGINS` / `CINEMATCH_PUBLIC_APP_URL` | API hostname | Same-origin demo; **change to the static site URL** for split production |
 
 `render.yaml` still declares a Render Postgres instance named `cinematch-db` and wires its connection string into the API. That block is a blueprint fallback. For the Neon layout, set `DATABASE_URL` and `DATABASE_URL_UNPOOLED` on the web service and do not point `CINEMATCH_DATABASE_URL` at the Render database. The app will use Neon.
 
