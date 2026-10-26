@@ -43,9 +43,11 @@ The **static site** build on Render embeds `VITE_API_URL=https://ai-movie-recomm
 
 ### Demo video
 
-Walkthrough of the hosted app (onboarding, recommendations, group movie night). Script: [docs/demo-script.md](docs/demo-script.md). File in repo: [`docs/cinematch-demo.web.mp4`](docs/cinematch-demo.web.mp4) (H.264, ~3.4 MB).
+Walkthrough of the hosted app (onboarding, recommendations, group movie night). Script: [docs/demo-script.md](docs/demo-script.md). File in repo: [`docs/cinematch-demo.web.mp4`](docs/cinematch-demo.web.mp4) (H.264, 1080×1920, ~13 MB).
 
-https://cdn.jsdelivr.net/gh/Geethika2506/AI-movie-recommenation-system@main/docs/cinematch-demo.web.mp4
+<video src="https://cdn.jsdelivr.net/gh/Geethika2506/AI-movie-recommenation-system@main/docs/cinematch-demo.web.mp4" controls width="100%">
+  <a href="https://cdn.jsdelivr.net/gh/Geethika2506/AI-movie-recommenation-system@main/docs/cinematch-demo.web.mp4">Open the demo video</a> if the player does not appear.
+</video>
 
 ---
 
